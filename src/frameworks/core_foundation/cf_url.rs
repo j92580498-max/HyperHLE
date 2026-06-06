@@ -917,9 +917,14 @@ fn CFURLCreateStringByReplacingPercentEscapes(
     if original_string.is_null() {
         return nil;
     }
-
-    log!("TODO: CFURLCreateStringByReplacingPercentEscapes is stubbed to prevent crash");
-    msg![env; original_string copy]
+    
+    // Use NSString's built-in percent decoding
+    let decoded: id = msg![env; original_string stringByRemovingPercentEncoding];
+    if decoded.is_null() {
+        msg![env; original_string copy]
+    } else {
+        msg![env; decoded copy]
+    }
 }
 
 fn CFURLCreateStringByReplacingPercentEscapesUsingEncoding(

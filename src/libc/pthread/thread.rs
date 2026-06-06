@@ -37,9 +37,8 @@ pub struct pthread_attr_t {
     // ИСПРАВЛЕНИЕ: Добавляем реальные поля для политики и параметров
     sched_policy: i32,
     sched_param: sched_param,
-    // Уменьшаем _unused с 7 до 5, так как добавили два 4-байтовых поля (чтобы
-    // сохранить общий размер в 40 байт)
-    _unused: [u32; 5],
+    inheritsched: i32,
+    _unused: [u32; 4],
 }
 unsafe impl SafeRead for pthread_attr_t {}
 
@@ -50,13 +49,17 @@ struct sched_param {
 }
 unsafe impl SafeRead for sched_param {}
 
+const PTHREAD_INHERIT_SCHED: i32 = 0;
+const PTHREAD_EXPLICIT_SCHED: i32 = 1;
+
 const DEFAULT_ATTR: pthread_attr_t = pthread_attr_t {
     magic: MAGIC_ATTR,
     detachstate: PTHREAD_CREATE_JOINABLE,
     stacksize: mem::Mem::SECONDARY_THREAD_DEFAULT_STACK_SIZE,
     sched_policy: 1, // SCHED_OTHER (дефолтная политика планирования в POSIX)
     sched_param: sched_param { sched_priority: 0 },
-    _unused: [0; 5],
+    inheritsched: PTHREAD_INHERIT_SCHED,
+    _unused: [0; 4],
 };
 
 /// Apple's implementation is a 4-byte magic number followed by a massive
@@ -249,11 +252,24 @@ fn pthread_attr_setinheritsched(
     inheritsched: i32,
 ) -> i32 {
     check_magic!(env, attr, MAGIC_ATTR);
-    log!(
-        "TODO: pthread_attr_setinheritsched({:?}, {})",
-        attr,
-        inheritsched
-    );
+    if inheritsched != PTHREAD_INHERIT_SCHED && inheritsched != PTHREAD_EXPLICIT_SCHED {
+        return EINVAL;
+    }
+    let mut attr_copy = env.mem.read(attr);
+    attr_copy.inheritsched = inheritsched;
+    env.mem.write(attr, attr_copy);
+    log_dbg!("pthread_attr_setinheritsched({:?}, {})", attr, inheritsched);
+    0
+}
+
+fn pthread_attr_getinheritsched(
+    env: &mut Environment,
+    attr: MutPtr<pthread_attr_t>,
+    inheritsched_ptr: MutPtr<i32>,
+) -> i32 {
+    check_magic!(env, attr, MAGIC_ATTR);
+    let inheritsched = env.mem.read(attr).inheritsched;
+    env.mem.write(inheritsched_ptr, inheritsched);
     0
 }
 
@@ -300,7 +316,8 @@ fn pthread_attr_destroy(env: &mut Environment, attr: MutPtr<pthread_attr_t>) -> 
             stacksize: 0,
             sched_policy: 0,
             sched_param: sched_param { sched_priority: 0 },
-            _unused: Default::default(),
+            inheritsched: 0,
+            _unused: [0; 4],
         },
     );
     0
@@ -720,6 +737,7 @@ pub const FUNCTIONS: FunctionExports = &[
     export_c_func!(pthread_attr_setstack(_, _, _)),
     export_c_func!(pthread_attr_setstackaddr(_, _)),
     export_c_func!(pthread_attr_setinheritsched(_, _)),
+    export_c_func!(pthread_attr_getinheritsched(_, _)),
     export_c_func!(pthread_attr_setschedpolicy(_, _)),
     export_c_func!(pthread_attr_setschedparam(_, _)),
     export_c_func!(pthread_attr_setscope(_, _)),

@@ -47,6 +47,19 @@ fn app_id_is_current(env: &mut Environment, app_id: CFStringRef) -> bool {
     if app_id_str == bundle_id {
         return true;
     }
+    
+    // NEW: Reverse-DNS prefix matching for shortened bundle IDs
+    // e.g. "com.popcap.pvz" should match "com.popcap.ios.chs.PvZGreatWall"
+    let app_parts: Vec<&str> = app_id_str.split('.').collect();
+    let bundle_parts: Vec<&str> = bundle_id.split('.').collect();
+    if app_parts.len() >= 2 && bundle_parts.len() >= 2 {
+        let app_prefix = app_parts[..app_parts.len().min(3)].join(".");
+        let bundle_prefix = bundle_parts[..bundle_parts.len().min(3)].join(".");
+        if app_prefix == bundle_prefix && bundle_id.starts_with(&app_prefix) {
+            return true;
+        }
+    }
+    
     log!(
         "Warning: CFPreferences called with applicationID {:?}, which is \
          neither kCFPreferencesCurrentApplication nor this app's bundle id \
