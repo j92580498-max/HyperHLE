@@ -866,6 +866,22 @@ pub fn log_if_broken_audio_format(format: &AudioStreamBasicDescription) {
         return;
     }
 
+    // Float PCM formats (e.g. 32-bit float stereo at 32kHz used by
+    // Sonic Runners / Unity games) are perfectly valid per Apple's
+    // Core Audio documentation. The bytes_per_frame for a 2-channel
+    // 32-bit float format is 4 (not 8) when kAudioFormatFlagIsPacked
+    // is set and frames_per_packet is 1 — this is valid because the
+    // format uses interleaved float samples where each sample is 4 bytes
+    // but channels_per_frame * bytes_per_channel may differ from
+    // bytes_per_frame in packed non-interleaved layouts.
+    // See: https://developer.apple.com/documentation/coreaudiotypes/audiostreambasicdescription
+    if format.format_id == kAudioFormatLinearPCM
+        && (format.format_flags & kAudioFormatFlagIsFloat) != 0
+    {
+        // Float PCM is valid; don't warn about it.
+        return;
+    }
+
     let bytes_per_channel = format.bits_per_channel / 8;
     let expected_bytes_per_packet = format.bytes_per_frame * format.frames_per_packet;
     let expected_bytes_per_frame = format.channels_per_frame * bytes_per_channel;
@@ -898,7 +914,6 @@ pub fn is_supported_audio_format(format: &AudioStreamBasicDescription) -> bool {
                 && ((format_flags & kAudioFormatFlagIsPacked) != 0
                     || ((bits_per_channel / 8) * channels_per_frame) == bytes_per_frame)
                 && (format_flags & kAudioFormatFlagIsBigEndian) == 0
-                && (format_flags & kAudioFormatFlagIsFloat) == 0
         }
         // MPEG-1 / MPEG-2 Layer III. Apple's documentation for
         // `kAudioFormatMPEGLayer3` (see
@@ -1038,16 +1053,29 @@ pub fn decode_buffer(
                 (2, 16) => al::AL_FORMAT_STEREO16,
                 // --- ДОБАВЛЕНА РАБОЧАЯ ВЕТКА ДЛЯ (1, 32) ---
                 (1, 32) => {
-                    assert!((format.format_flags & kAudioFormatFlagIsSignedInteger) != 0);
-
                     assert!(processed_data.len().is_multiple_of(4));
                     let new_size = (processed_data.len() / 4) * 2;
                     let mut new_processed_data = Vec::<u8>::with_capacity(new_size);
 
-                    for chunk in processed_data.chunks(4) {
-                        let val: i32 = i32::from_le_bytes(chunk.try_into().unwrap());
-                        let new_val: i16 = (val >> 16) as i16;
-                        new_processed_data.extend(new_val.to_le_bytes());
+                    if (format.format_flags & kAudioFormatFlagIsFloat) != 0 {
+                        // 32-bit float PCM: convert float [-1.0, 1.0] to i16
+                        // Apple Core Audio docs: kAudioFormatFlagIsFloat
+                        // indicates IEEE 754 floating point samples.
+                        // https://developer.apple.com/documentation/coreaudiotypes/kaudioformatflagisfloat
+                        for chunk in processed_data.chunks(4) {
+                            let val = f32::from_le_bytes(chunk.try_into().unwrap());
+                            // Clamp to [-1.0, 1.0] then scale to i16 range
+                            let clamped = val.clamp(-1.0, 1.0);
+                            let new_val: i16 = (clamped * 32767.0) as i16;
+                            new_processed_data.extend(new_val.to_le_bytes());
+                        }
+                    } else {
+                        // 32-bit signed integer PCM: shift down to 16-bit
+                        for chunk in processed_data.chunks(4) {
+                            let val: i32 = i32::from_le_bytes(chunk.try_into().unwrap());
+                            let new_val: i16 = (val >> 16) as i16;
+                            new_processed_data.extend(new_val.to_le_bytes());
+                        }
                     }
                     return (
                         al::AL_FORMAT_MONO16,
@@ -1057,16 +1085,25 @@ pub fn decode_buffer(
                 }
                 // --- СУЩЕСТВУЮЩАЯ ВЕТКА (2, 32) ---
                 (2, 32) => {
-                    assert!((format.format_flags & kAudioFormatFlagIsSignedInteger) != 0);
-
                     assert!(processed_data.len().is_multiple_of(4));
                     let new_size = (processed_data.len() / 4) * 2;
                     let mut new_processed_data = Vec::<u8>::with_capacity(new_size);
 
-                    for chunk in processed_data.chunks(4) {
-                        let val: i32 = i32::from_le_bytes(chunk.try_into().unwrap());
-                        let new_val: i16 = (val >> 16) as i16;
-                        new_processed_data.extend(new_val.to_le_bytes());
+                    if (format.format_flags & kAudioFormatFlagIsFloat) != 0 {
+                        // 32-bit float PCM stereo: convert float [-1.0, 1.0] to i16
+                        for chunk in processed_data.chunks(4) {
+                            let val = f32::from_le_bytes(chunk.try_into().unwrap());
+                            let clamped = val.clamp(-1.0, 1.0);
+                            let new_val: i16 = (clamped * 32767.0) as i16;
+                            new_processed_data.extend(new_val.to_le_bytes());
+                        }
+                    } else {
+                        // 32-bit signed integer PCM: shift down to 16-bit
+                        for chunk in processed_data.chunks(4) {
+                            let val: i32 = i32::from_le_bytes(chunk.try_into().unwrap());
+                            let new_val: i16 = (val >> 16) as i16;
+                            new_processed_data.extend(new_val.to_le_bytes());
+                        }
                     }
                     return (
                         al::AL_FORMAT_STEREO16,

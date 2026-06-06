@@ -15,6 +15,7 @@ use crate::objc::{
     NSZonePtr,
 };
 
+#[derive(Default)]
 struct NSIndexPathHostObject {
     /// Stored indexes (heap-allocated Rust vec).
     indexes: Vec<NSUInteger>,

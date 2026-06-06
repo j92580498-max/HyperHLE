@@ -54,6 +54,7 @@ pub const kCGEncodingMacRoman: i32 = 1;
 
 /// Host object backing a CGFont created via [CGFontCreateWithDataProvider].
 /// Contains the parsed Font with full glyph metrics and raw table access.
+#[derive(Default)]
 pub struct CGFontHostObject {
     pub font: Font,
 }

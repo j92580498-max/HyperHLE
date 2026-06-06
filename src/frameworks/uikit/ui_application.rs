@@ -28,6 +28,7 @@ pub struct State {
     pub(super) ignoring_interaction_events_count: u32,
 }
 
+#[derive(Default)]
 struct UIApplicationHostObject {
     delegate: id,
     delegate_is_retained: bool,
@@ -532,6 +533,26 @@ pub const CLASSES: ClassExports = objc_classes! {
 @end
 
 };
+
+/// Best-effort discovery of the application delegate class.
+///
+/// `UIApplicationMain` normally learns the delegate class from its
+/// `delegateClassName` argument (or from a connection in the main nib). When
+/// neither is available, look through the loaded classes for one that declares
+/// a `UIApplicationDelegate` launch method and use that. Returns `nil` if no
+/// candidate is found.
+fn find_app_delegate_class(env: &Environment) -> id {
+    for sel_name in [
+        "application:didFinishLaunchingWithOptions:",
+        "applicationDidFinishLaunching:",
+    ] {
+        if let Some(class) = env.objc.class_declaring_instance_method(sel_name) {
+            return class;
+        }
+    }
+    nil
+}
+
 /// `UIApplicationMain`, the entry point of the application.
 pub(super) fn UIApplicationMain(
     env: &mut Environment,
@@ -577,19 +598,55 @@ pub(super) fn UIApplicationMain(
 
         let delegate: id = msg![env; ui_application delegate];
         if delegate != nil {
+            // The delegate was wired up while loading the main nib.
             env.objc
                 .borrow_mut::<UIApplicationHostObject>(ui_application)
                 .delegate_is_retained = true;
             retain(env, delegate);
+        } else if delegate_class_name != nil
+            && msg![env; delegate_class_name isEqual:principal_class_name]
+        {
+            // The app uses its principal class as its own delegate.
+            let _: () = msg![env; ui_application setDelegate:ui_application];
         } else {
-            // assert!(delegate_class_name != nil);
-            if msg![env; delegate_class_name isEqual:principal_class_name] {
-                let _: () = msg![env; ui_application setDelegate:ui_application];
-            } else {
-                let name = ns_string::to_rust_string(env, delegate_class_name);
-                let class = env.objc.get_known_class(&name, &mut env.mem);
-                let delegate: id = msg![env; class new];
+            // The delegate is normally created from the class named by the
+            // `delegate_class_name` argument. Some apps reach this point
+            // without a usable name: the argument is nil (the delegate was
+            // expected from the main nib, but no nib connection set it), or
+            // the value the binary passed could not be resolved to a real
+            // class (e.g. it was derived from a class reference that ended up
+            // nil, which decodes to the empty string). Previously this left
+            // the application with a nil delegate, so
+            // `application:didFinishLaunchingWithOptions:` was never sent and
+            // the app stayed frozen on its launch image. Fall back to
+            // discovering the app's delegate class from the loaded classes.
+            let mut delegate_class: id = nil;
+            if delegate_class_name != nil {
+                let name = ns_string::to_rust_string(env, delegate_class_name).into_owned();
+                if !name.is_empty() {
+                    delegate_class = env
+                        .objc
+                        .try_get_known_class(&name, &mut env.mem)
+                        .unwrap_or(nil);
+                }
+            }
+            if delegate_class == nil {
+                delegate_class = find_app_delegate_class(env);
+                if delegate_class != nil {
+                    log!(
+                        "UIApplicationMain: no usable delegate class name was \
+                         provided; using discovered application delegate class."
+                    );
+                }
+            }
+            if delegate_class != nil {
+                let delegate: id = msg![env; delegate_class new];
                 let _: () = msg![env; ui_application setDelegate:delegate];
+            } else {
+                log!(
+                    "Warning: UIApplicationMain could not determine an \
+                     application delegate; the app may not finish launching."
+                );
             }
         };
 

@@ -11,6 +11,7 @@ use crate::objc::{
     id, nil, objc_classes, release, retain, ClassExports, HostObject, NSZonePtr,
 };
 
+#[derive(Default)]
 pub(super) struct UILocalNotificationHostObject {
     fire_date: id,
     time_zone: id,

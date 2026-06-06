@@ -18,6 +18,7 @@ use std::sync::{Arc, Condvar, Mutex};
 // NSInteger is i32 on 32-bit ARM.
 type NSInteger = i32;
 
+#[derive(Default)]
 struct NSLockHostObject {
     mutex_id: MutexId,
     name: id,
@@ -67,7 +68,16 @@ pub const CLASSES: ClassExports = objc_classes! {
     if !env.mutex_state.mutex_is_locked(host_object.mutex_id) {
         echo!("*** -[NSLock unlock]: lock (<NSLock: {:?}> '{:?}') unlocked when not locked", this, host_object.name);
     }
-    env.unlock_mutex(host_object.mutex_id).unwrap();
+    if let Err(e) = env.unlock_mutex(host_object.mutex_id) {
+        // Error 16 = EBUSY, Error 1 = EPERM. On real iOS these are
+        // non-fatal (the unlock simply fails silently for NSLock).
+        // Apps like EnbornX trigger this during shutdown sequences
+        // when locks are released out of order.
+        log_dbg!(
+            "*** -[NSLock unlock]: unlock_mutex returned error {} for lock {:?}, ignoring",
+            e, this
+        );
+    }
 }
 
 - (bool)tryLock {
@@ -90,7 +100,7 @@ pub const CLASSES: ClassExports = objc_classes! {
 - (())dealloc {
     log_dbg!("[(NSLock *){:?} dealloc]", this);
     let host_object = env.objc.borrow::<NSLockHostObject>(this);
-    env.mutex_state.destroy_mutex(host_object.mutex_id).unwrap();
+    let _ = env.mutex_state.destroy_mutex(host_object.mutex_id);
     env.objc.dealloc_object(this, &mut env.mem)
 }
 
@@ -117,7 +127,12 @@ pub const CLASSES: ClassExports = objc_classes! {
     if !env.mutex_state.mutex_is_locked(host_object.mutex_id) {
         echo!("*** -[NSRecursiveLock unlock]: lock (<NSRecursiveLock: {:?}> '{:?}') unlocked when not locked", this, host_object.name);
     }
-    env.unlock_mutex(host_object.mutex_id).unwrap();
+    if let Err(e) = env.unlock_mutex(host_object.mutex_id) {
+        log_dbg!(
+            "*** -[NSRecursiveLock unlock]: unlock_mutex returned error {} for lock {:?}, ignoring",
+            e, this
+        );
+    }
 }
 
 - (bool)tryLock {
@@ -140,7 +155,7 @@ pub const CLASSES: ClassExports = objc_classes! {
 - (())dealloc {
     log_dbg!("[(NSRecursiveLock *){:?} dealloc]", this);
     let host_object = env.objc.borrow::<NSLockHostObject>(this);
-    env.mutex_state.destroy_mutex(host_object.mutex_id).unwrap();
+    let _ = env.mutex_state.destroy_mutex(host_object.mutex_id);
     env.objc.dealloc_object(this, &mut env.mem)
 }
 

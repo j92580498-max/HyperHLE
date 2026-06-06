@@ -386,7 +386,7 @@ fn glGetString(env: &mut Environment, name: GLenum) -> ConstPtr<GLubyte> {
             gles11::VENDOR => b"Imagination Technologies",
             gles11::RENDERER => b"PowerVR MBXLite with VGPLite",
             gles11::VERSION => b"OpenGL ES-CM 1.1 (76)",
-            gles11::EXTENSIONS => b"GL_APPLE_framebuffer_multisample GL_APPLE_texture_max_level GL_EXT_discard_framebuffer GL_EXT_texture_filter_anisotropic GL_EXT_texture_lod_bias GL_IMG_read_format GL_IMG_texture_compression_pvrtc GL_IMG_texture_format_BGRA8888 GL_OES_blend_subtract GL_OES_compressed_paletted_texture GL_OES_depth24 GL_OES_draw_texture GL_OES_framebuffer_object GL_OES_mapbuffer GL_OES_matrix_palette GL_OES_point_size_array GL_OES_point_sprite GL_OES_read_format GL_OES_rgb8_rgba8 GL_OES_texture_mirrored_repeat GL_OES_vertex_array_object ",
+            gles11::EXTENSIONS => b"GL_APPLE_framebuffer_multisample GL_APPLE_texture_max_level GL_EXT_discard_framebuffer GL_EXT_texture_filter_anisotropic GL_EXT_texture_lod_bias GL_IMG_read_format GL_IMG_texture_compression_pvrtc GL_IMG_texture_format_BGRA8888 GL_OES_blend_subtract GL_OES_compressed_paletted_texture GL_OES_depth24 GL_OES_draw_texture GL_OES_framebuffer_object GL_OES_mapbuffer GL_OES_point_size_array GL_OES_point_sprite GL_OES_read_format GL_OES_rgb8_rgba8 GL_OES_texture_mirrored_repeat GL_OES_vertex_array_object ",
             _ => b"Unknown",
         }
     } else {
@@ -1021,6 +1021,24 @@ fn glDrawTexxvOES(env: &mut Environment, coords: ConstPtr<GLfixed>) {
         unsafe { gles.DrawTexxvOES(coords) }
     })
 }
+fn glDrawTexsOES(
+    env: &mut Environment,
+    x: i16,
+    y: i16,
+    z: i16,
+    width: i16,
+    height: i16,
+) {
+    with_ctx_and_mem(env, |gles, _mem| unsafe {
+        gles.DrawTexsOES(x, y, z, width, height)
+    })
+}
+fn glDrawTexsvOES(env: &mut Environment, coords: ConstPtr<i16>) {
+    with_ctx_and_mem(env, |gles, mem| {
+        let coords = mem.ptr_at(coords, 5);
+        unsafe { gles.DrawTexsvOES(coords) }
+    })
+}
 fn glRenderbufferStorageMultisampleAPPLE(
     env: &mut Environment,
     target: GLenum,
@@ -1075,15 +1093,45 @@ fn glPopGroupMarkerEXT(_env: &mut Environment) {
     // Debug markers are hints; safe to ignore.
 }
 
-fn glBindVertexArrayOES(_env: &mut Environment, _array: GLuint) {}
-fn glDeleteVertexArraysOES(_env: &mut Environment, _n: GLsizei, _arrays: ConstPtr<GLuint>) {}
+fn glBindVertexArrayOES(env: &mut Environment, array: GLuint) {
+    with_ctx_and_mem(env, |gles, _mem| unsafe {
+        if gles.supports_vao_oes() {
+            gles.BindVertexArrayOES(array);
+        }
+        // Otherwise no-op: without real VAO support all vertex state lives in
+        // the single default array object, so there is nothing to switch.
+    });
+}
+fn glDeleteVertexArraysOES(env: &mut Environment, n: GLsizei, arrays: ConstPtr<GLuint>) {
+    with_ctx_and_mem(env, |gles, mem| unsafe {
+        if gles.supports_vao_oes() {
+            let slice = mem.bytes_at(arrays.cast(), (n.max(0) as GuestUSize) * 4);
+            gles.DeleteVertexArraysOES(n, slice.as_ptr().cast());
+        }
+    });
+}
 fn glGenVertexArraysOES(env: &mut Environment, n: GLsizei, arrays: MutPtr<GLuint>) {
-    for i in 0..n {
-        env.mem.write(arrays + (i as GuestUSize), (i + 1) as GLuint);
+    let supported = with_ctx_and_mem(env, |gles, _mem| gles.supports_vao_oes());
+    if supported {
+        with_ctx_and_mem(env, |gles, mem| unsafe {
+            let slice = mem.bytes_at_mut(arrays.cast(), (n.max(0) as GuestUSize) * 4);
+            gles.GenVertexArraysOES(n, slice.as_mut_ptr().cast());
+        });
+    } else {
+        // Fallback emulation: just hand out sequential non-zero names.
+        for i in 0..n {
+            env.mem.write(arrays + (i as GuestUSize), (i + 1) as GLuint);
+        }
     }
 }
-fn glIsVertexArrayOES(_env: &mut Environment, _array: GLuint) -> GLboolean {
-    0
+fn glIsVertexArrayOES(env: &mut Environment, array: GLuint) -> GLboolean {
+    with_ctx_and_mem(env, |gles, _mem| unsafe {
+        if gles.supports_vao_oes() {
+            gles.IsVertexArrayOES(array)
+        } else {
+            0
+        }
+    })
 }
 fn glCurrentPaletteMatrixOES(_env: &mut Environment, _matrixpaletteindex: GLuint) {}
 fn glLoadPaletteFromModelViewMatrixOES(_env: &mut Environment) {}
@@ -1112,6 +1160,68 @@ fn glGetBufferPointervOES(
     env.mem.write(params, Ptr::null());
 }
 
+/// Guard against a whole-emulator crash caused by enabled *client-side* vertex
+/// attribute arrays whose pointer is not actually inside guest memory.
+///
+/// When no buffer object is bound for an attribute array, the host GL driver
+/// reads the vertex data straight from the pointer touchHLE gave it. That
+/// pointer is only safe if it addresses guest memory. A guest can leave an
+/// array enabled with a bogus pointer — e.g. a stale offset into a vertex
+/// buffer that was unbound or deleted before the draw (observed in My Talking
+/// Tom: tapping Tom issues a glDrawElements whose attribute #3 still carries the
+/// raw offset 0x9c0). The driver (both Mesa/llvmpipe and real GPU drivers) then
+/// dereferences that wild address and segfaults the process.
+///
+/// To stay robust we check every enabled array that has no buffer bound and
+/// temporarily disable any whose pointer falls outside guest memory, restoring
+/// them after the draw. The draw then renders with default attribute values
+/// instead of taking the whole emulator down.
+unsafe fn guard_client_vertex_arrays(gles: &mut dyn GLES, mem: &Mem) -> Vec<GLuint> {
+    const VERTEX_ATTRIB_ARRAY_ENABLED: GLenum = 0x8622;
+    const VERTEX_ATTRIB_ARRAY_BUFFER_BINDING: GLenum = 0x889F;
+    const VERTEX_ATTRIB_ARRAY_POINTER: GLenum = 0x8645;
+    const MAX_VERTEX_ATTRIBS: GLenum = 0x8869;
+
+    let mut max_attribs: GLint = 0;
+    gles.GetIntegerv(MAX_VERTEX_ATTRIBS, &mut max_attribs);
+    // Be defensive about a backend that doesn't answer the query.
+    let max_attribs = if (1..=64).contains(&max_attribs) {
+        max_attribs as GLuint
+    } else {
+        16
+    };
+
+    let mut disabled = Vec::new();
+    for index in 0..max_attribs {
+        let mut enabled: GLint = 0;
+        gles.GetVertexAttribiv(index, VERTEX_ATTRIB_ARRAY_ENABLED, &mut enabled);
+        if enabled == 0 {
+            continue;
+        }
+        let mut bound: GLint = 0;
+        gles.GetVertexAttribiv(index, VERTEX_ATTRIB_ARRAY_BUFFER_BINDING, &mut bound);
+        if bound != 0 {
+            // Data comes from a buffer object; the driver handles bounds.
+            continue;
+        }
+        let mut ptr: *mut GLvoid = std::ptr::null_mut();
+        gles.GetVertexAttribPointerv(index, VERTEX_ATTRIB_ARRAY_POINTER, &mut ptr);
+        if mem.is_host_ptr_in_guest_mem(ptr) {
+            // A legitimate client-side array pointing into guest memory.
+            continue;
+        }
+        log!(
+            "Warning: disabling enabled vertex attribute array #{} for this draw: \
+             no buffer is bound and its client pointer {:?} is outside guest memory \
+             (would crash the host GL driver)",
+            index, ptr
+        );
+        gles.DisableVertexAttribArray(index);
+        disabled.push(index);
+    }
+    disabled
+}
+
 fn glDrawArrays(env: &mut Environment, mode: GLenum, first: GLint, count: GLsizei) {
     {
         use std::sync::atomic::{AtomicBool, Ordering};
@@ -1123,10 +1233,14 @@ fn glDrawArrays(env: &mut Environment, mode: GLenum, first: GLint, count: GLsize
             );
         }
     }
-    with_ctx_and_mem(env, |gles, _mem| unsafe {
+    with_ctx_and_mem(env, |gles, mem| unsafe {
+        let disabled_arrays = guard_client_vertex_arrays(gles, mem);
         let fog_state_backup = clamp_fog_state_values(gles);
         gles.DrawArrays(mode, first, count);
         restore_fog_state_values(gles, fog_state_backup);
+        for index in disabled_arrays {
+            gles.EnableVertexAttribArray(index);
+        }
     })
 }
 fn glDrawElements(
@@ -1147,6 +1261,7 @@ fn glDrawElements(
         }
     }
     with_ctx_and_mem(env, |gles, mem| unsafe {
+        let disabled_arrays = guard_client_vertex_arrays(gles, mem);
         let fog_state_backup = clamp_fog_state_values(gles);
         let indices = translate_pointer_or_offset_to_host(
             gles,
@@ -1156,6 +1271,9 @@ fn glDrawElements(
         );
         gles.DrawElements(mode, count, type_, indices);
         restore_fog_state_values(gles, fog_state_backup);
+        for index in disabled_arrays {
+            gles.EnableVertexAttribArray(index);
+        }
     })
 }
 
@@ -4622,6 +4740,8 @@ pub const FUNCTIONS: FunctionExports = &[
     export_c_func!(glDrawTexfvOES(_)),
     export_c_func!(glDrawTexivOES(_)),
     export_c_func!(glDrawTexxvOES(_)),
+    export_c_func!(glDrawTexsOES(_, _, _, _, _)),
+    export_c_func!(glDrawTexsvOES(_)),
     export_c_func!(glRenderbufferStorageMultisampleAPPLE(_, _, _, _, _)),
     export_c_func!(glResolveMultisampleFramebufferAPPLE()),
     export_c_func!(glDiscardFramebufferEXT(_, _, _)),

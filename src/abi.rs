@@ -23,7 +23,7 @@ pub const FRAME_POINTER: usize = 7;
 /// bit. This is also used as an (untyped) guest function pointer.
 ///
 /// It is wrapped in a struct to prevent mixing with other pointers.
-#[derive(Copy, Clone, Debug, PartialEq)]
+#[derive(Copy, Clone, Debug, Default, PartialEq)]
 pub struct GuestFunction(ConstVoidPtr);
 
 unsafe impl SafeRead for GuestFunction {}

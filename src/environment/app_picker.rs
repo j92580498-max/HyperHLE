@@ -1334,18 +1334,22 @@ fn setup_quick_options(
     () = msg![env; main_view setHidden:true];
     () = msg![env; super_view addSubview:main_view];
 
-    let divider = 40.0;
+    let divider = 50.0;
 
-    // Close button
+    // Close button (×) in the upper right corner. It uses an explicit border
+    // and a slightly larger frame than the title so the glyph is clearly
+    // visible against the white menu background.
     {
+        let button_size: CGFloat = 36.0;
+        let button_margin: CGFloat = 8.0;
         let button_frame = CGRect {
             origin: CGPoint {
-                x: main_frame.size.width - 30.0,
-                y: 10.0,
+                x: main_frame.size.width - button_size - button_margin,
+                y: button_margin,
             },
             size: CGSize {
-                width: 20.0,
-                height: 20.0,
+                width: button_size,
+                height: button_size,
             },
         };
 
@@ -1357,8 +1361,20 @@ fn setup_quick_options(
         () = msg![env; button layoutSubviews];
 
         let label: id = msg![env; button titleLabel];
-        let font: id = msg_class![env; UIFont systemFontOfSize:(30.0 as CGFloat)];
+        let font: id = msg_class![env; UIFont systemFontOfSize:(28.0 as CGFloat)];
         () = msg![env; label setFont:font];
+
+        // `buttonWithType:UIButtonTypeRoundedRect` does not actually apply the
+        // rounded-rect appearance, so explicitly give the close button a
+        // visible background, title color and rounded border. Without this
+        // the white default title on a clear background would be invisible
+        // against the white menu.
+        let bg_color: id = msg_class![env; UIColor grayColor];
+        () = msg![env; button setBackgroundColor:bg_color];
+        let text_color: id = msg_class![env; UIColor whiteColor];
+        () = msg![env; button setTitleColor:text_color forState:UIControlStateNormal];
+        let layer: id = msg![env; button layer];
+        () = msg![env; layer setCornerRadius:(8.0 as CGFloat)];
 
         let selector = env.objc.lookup_selector("quickOptionsHide").unwrap();
         () = msg![env; button addTarget:delegate

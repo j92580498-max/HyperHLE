@@ -14,6 +14,7 @@ use crate::objc::{
 
 // MARK: - UITabBar host object
 
+#[derive(Default)]
 struct UITabBarHostObject {
     /// `NSArray*` of `UITabBarItem*`
     items: id,
@@ -28,6 +29,7 @@ impl HostObject for UITabBarHostObject {}
 
 // MARK: - UITabBarController host object
 
+#[derive(Default)]
 struct UITabBarControllerHostObject {
     superclass: UIViewControllerHostObject,
     /// `NSArray*` of `UIViewController*`

@@ -20,6 +20,7 @@ impl State {
     }
 }
 
+#[derive(Default)]
 struct NSAutoreleasePoolHostObject {
     original_thread: ThreadId,
     /// This is allowed to contain duplicates, which get released several times!

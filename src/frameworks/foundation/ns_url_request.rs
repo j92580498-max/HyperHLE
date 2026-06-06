@@ -32,6 +32,7 @@ const NSURLNetworkServiceTypeBackground: NSURLRequestNetworkServiceType = 3;
 #[allow(dead_code)]
 const NSURLNetworkServiceTypeVoice: NSURLRequestNetworkServiceType = 4;
 
+#[derive(Default)]
 struct NSURLRequestHostObject {
     /// `NSURL*`
     url: id,
@@ -119,11 +120,12 @@ pub const CLASSES: ClassExports = objc_classes! {
         return nil;
     }
 
-    if !env.options.network_access {
-        log_dbg!("Network access disabled — NSURLRequest initWithURL: returning nil");
-        release(env, this);
-        return nil;
-    }
+    // NOTE: NSURLRequest is a pure value object (container for URL,
+    // headers, cache policy, etc.) per Apple's documentation:
+    // https://developer.apple.com/documentation/foundation/nsurlrequest
+    // It must ALWAYS succeed regardless of network availability.
+    // Network-level failures are reported later by NSURLConnection /
+    // NSURLSession when the request is actually executed.
 
     let url_copy: id = msg![env; url copy];
     {

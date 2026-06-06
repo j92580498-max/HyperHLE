@@ -426,27 +426,6 @@ pub const CONSTANTS: ConstantExports = &[
         "_kCFStreamPropertyHTTPFinalURL",
         HostConstant::NSString("kCFStreamPropertyHTTPFinalURL"),
     ),
-    // CFStream socket-security-level identifiers.
-    (
-        "_kCFStreamSocketSecurityLevelNone",
-        HostConstant::NSString("kCFStreamSocketSecurityLevelNone"),
-    ),
-    (
-        "_kCFStreamSocketSecurityLevelSSLv2",
-        HostConstant::NSString("kCFStreamSocketSecurityLevelSSLv2"),
-    ),
-    (
-        "_kCFStreamSocketSecurityLevelSSLv3",
-        HostConstant::NSString("kCFStreamSocketSecurityLevelSSLv3"),
-    ),
-    (
-        "_kCFStreamSocketSecurityLevelTLSv1",
-        HostConstant::NSString("kCFStreamSocketSecurityLevelTLSv1"),
-    ),
-    (
-        "_kCFStreamSocketSecurityLevelNegotiatedSSL",
-        HostConstant::NSString("kCFStreamSocketSecurityLevelNegotiatedSSL"),
-    ),
     // CFStream error-domain identifiers (also exposed by CoreServices).
     (
         "_kCFStreamErrorDomainHTTP",

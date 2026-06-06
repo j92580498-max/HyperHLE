@@ -61,6 +61,10 @@ fn main() {
         build.define("CMAKE_SYSTEM_NAME", "Android");
         build.define("CMAKE_SYSTEM_VERSION", "21");
         build.define("ANDROID", "ON");
+        // Without this, CMake's architecture probe sees 32-bit `__arm__` and
+        // builds dynarmic for arm instead of arm64, which breaks 64-bit FP
+        // helpers (e.g. FPRecipExponent) when cross-compiling for AArch64.
+        build.define("CMAKE_ANDROID_ARCH_ABI", "arm64-v8a");
     }
     // dynarmic can't be dynamically linked
     let dynarmic_out = build.build();

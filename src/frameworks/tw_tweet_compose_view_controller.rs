@@ -18,6 +18,7 @@ const TWTweetComposeViewControllerResultDone: NSInteger = 1;
 
 // MARK: - TWTweetComposeViewControllerHostObject
 
+#[derive(Default)]
 struct TWTweetComposeViewControllerHostObject {
     /// TWTweetComposeViewControllerCompletionHandler (блок)
     completion_handler: id,

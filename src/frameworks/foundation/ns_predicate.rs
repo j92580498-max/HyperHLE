@@ -15,7 +15,9 @@ use crate::objc::{
 // =========================================================================
 
 enum PredicateKind {
-    /// Always evaluates to the given constant.
+    /// Always evaluates to the given constant. Also acts as the
+    /// `Default` for the phantom-fallback host object (yielding a
+    /// predicate that always returns `false`).
     Constant(bool),
     /// Raw format string — stored but not parsed/evaluated.
     Format(String),
@@ -28,7 +30,13 @@ enum PredicateKind {
     /// Block-based predicate (not supported — always returns false).
     Block,
 }
+impl Default for PredicateKind {
+    fn default() -> Self {
+        PredicateKind::Constant(false)
+    }
+}
 
+#[derive(Default)]
 struct NSPredicateHostObject {
     kind: PredicateKind,
     /// Original format string if created with predicateWithFormat:.

@@ -34,6 +34,7 @@ pub struct State {
     shared: id,
 }
 
+#[derive(Default)]
 struct NSHTTPCookieStorageHostObject {
     /// Cookie accept policy:
     ///   NSHTTPCookieAcceptPolicyAlways = 0

@@ -413,6 +413,12 @@ pub struct GLES1OnGL2State {
     pointer_is_fixed_point: [bool; ARRAYS.len()],
     fixed_point_texture_units: HashSet<GLenum>,
     fixed_point_translation_buffers: [Vec<GLfloat>; ARRAYS.len()],
+    /// Set while the guest has selected a matrix mode we don't emulate, such
+    /// as `GL_MATRIX_PALETTE_OES` (0x8840) from `OES_matrix_palette`. Desktop
+    /// GL 2.1 has no fixed-function palette skinning, so we drop matrix-stack
+    /// writes while this is set rather than corrupting the real
+    /// MODELVIEW/PROJECTION/TEXTURE matrices (or panicking).
+    unsupported_matrix_mode: bool,
 }
 
 pub struct GLES1OnGL2Context {
@@ -432,6 +438,7 @@ impl GLESContext for GLES1OnGL2Context {
                 pointer_is_fixed_point: [false; ARRAYS.len()],
                 fixed_point_texture_units: HashSet::new(),
                 fixed_point_translation_buffers: [Vec::new(), Vec::new(), Vec::new(), Vec::new()],
+                unsupported_matrix_mode: false,
             },
             is_loaded: false,
         })
@@ -786,16 +793,59 @@ impl GLES for GLES1OnGL2<'_> {
         gl21::DisableClientState(array);
     }
     unsafe fn GetBooleanv(&mut self, pname: GLenum, params: *mut GLboolean) {
-        let (type_, _count) = GET_PARAMS.get_type_info(pname);
-        // TODO: type conversion
-        assert!(type_ == ParamType::Boolean);
-        gl21::GetBooleanv(pname, params);
+        let (type_, count) = GET_PARAMS.get_type_info(pname);
+        let count = usize::from(count.max(1));
+        match type_ {
+            ParamType::Boolean => {
+                gl21::GetBooleanv(pname, params);
+            }
+            ParamType::Int => {
+                // Per the GLES 1.1 spec, any non-zero integer maps to TRUE.
+                let mut tmp = [0i32; 16];
+                let slice = &mut tmp[..count];
+                gl21::GetIntegerv(pname, slice.as_mut_ptr());
+                for (i, &v) in slice.iter().enumerate() {
+                    *params.add(i) = if v != 0 { gl21::TRUE } else { gl21::FALSE };
+                }
+            }
+            ParamType::Float | ParamType::FloatSpecial => {
+                // Any non-zero float maps to TRUE.
+                let mut tmp = [0f32; 16];
+                let slice = &mut tmp[..count];
+                gl21::GetFloatv(pname, slice.as_mut_ptr());
+                for (i, &v) in slice.iter().enumerate() {
+                    *params.add(i) = if v != 0.0 { gl21::TRUE } else { gl21::FALSE };
+                }
+            }
+            _ => gl21::GetBooleanv(pname, params),
+        }
     }
     unsafe fn GetFloatv(&mut self, pname: GLenum, params: *mut GLfloat) {
-        let (type_, _count) = GET_PARAMS.get_type_info(pname);
-        // TODO: type conversion
-        assert!(type_ == ParamType::Float || type_ == ParamType::FloatSpecial);
-        gl21::GetFloatv(pname, params);
+        let (type_, count) = GET_PARAMS.get_type_info(pname);
+        let count = usize::from(count.max(1));
+        match type_ {
+            ParamType::Float | ParamType::FloatSpecial => {
+                gl21::GetFloatv(pname, params);
+            }
+            ParamType::Int => {
+                // Integer state is widened to float verbatim.
+                let mut tmp = [0i32; 16];
+                let slice = &mut tmp[..count];
+                gl21::GetIntegerv(pname, slice.as_mut_ptr());
+                for (i, &v) in slice.iter().enumerate() {
+                    *params.add(i) = v as GLfloat;
+                }
+            }
+            ParamType::Boolean => {
+                let mut tmp = [0u8; 16];
+                let slice = &mut tmp[..count];
+                gl21::GetBooleanv(pname, slice.as_mut_ptr());
+                for (i, &v) in slice.iter().enumerate() {
+                    *params.add(i) = if v != 0 { 1.0 } else { 0.0 };
+                }
+            }
+            _ => gl21::GetFloatv(pname, params),
+        }
     }
     /// OpenGL ES 1.1 `glGetFixedv`. Desktop GL 2.1 does not have this entry
     /// point, so we route the query to `GetFloatv` / `GetIntegerv` /
@@ -838,12 +888,66 @@ impl GLES for GLES1OnGL2<'_> {
             }
         }
     }
+    /// OpenGL ES 1.1 `glGetIntegerv`. Desktop GL implements this entry point,
+    /// but only routes integer-typed state through it natively. For
+    /// floating-point or boolean state, the GLES 1.1 spec (section 6.1.2,
+    /// "Data Conversions") requires that the value be converted to an integer
+    /// before being returned. Without explicit conversion, calling the host
+    /// `glGetIntegerv` against e.g. a clamp-range float state can return
+    /// undefined or always-zero values (and historically this code asserted,
+    /// crashing the emulator). We mirror the conversion fan-out used by
+    /// `GetFixedv` above: query the underlying state at its native type and
+    /// convert each component per the spec.
     unsafe fn GetIntegerv(&mut self, pname: GLenum, params: *mut GLint) {
-        let (type_, _count) = GET_PARAMS.get_type_info(pname);
-        // TODO: type conversion
-        let allowed_float = type_ == ParamType::Float && pname == gl21::POINT_SIZE_MAX;
-        assert!(type_ == ParamType::Int || allowed_float);
-        gl21::GetIntegerv(pname, params);
+        let (type_, count) = GET_PARAMS.get_type_info(pname);
+        let count = usize::from(count.max(1));
+        match type_ {
+            ParamType::Int => {
+                gl21::GetIntegerv(pname, params);
+            }
+            ParamType::Boolean => {
+                // GL_TRUE / GL_FALSE map to 1 / 0.
+                let mut tmp = [0u8; 16];
+                let slice = &mut tmp[..count];
+                gl21::GetBooleanv(pname, slice.as_mut_ptr());
+                for (i, &v) in slice.iter().enumerate() {
+                    *params.add(i) = if v != 0 { 1 } else { 0 };
+                }
+            }
+            ParamType::Float => {
+                // Round to the nearest integer, clamped to the GLint range.
+                let mut tmp = [0f32; 16];
+                let slice = &mut tmp[..count];
+                gl21::GetFloatv(pname, slice.as_mut_ptr());
+                for (i, &v) in slice.iter().enumerate() {
+                    let rounded = (v as f64).round();
+                    let clamped = rounded.clamp(GLint::MIN as f64, GLint::MAX as f64);
+                    *params.add(i) = clamped as GLint;
+                }
+            }
+            ParamType::FloatSpecial => {
+                // Normalized floating-point components (colors, clear values,
+                // etc.) are scaled to the full GLint range per the GLES 1.1
+                // spec table 6.1. We approximate the spec formula
+                // c_i = round((2^32 - 1) * c_f - 1) / 2 by scaling by
+                // GLint::MAX, which is well within float precision and
+                // matches what real iPhone OS drivers return in practice.
+                let mut tmp = [0f32; 16];
+                let slice = &mut tmp[..count];
+                gl21::GetFloatv(pname, slice.as_mut_ptr());
+                for (i, &v) in slice.iter().enumerate() {
+                    let scaled = (v as f64) * (GLint::MAX as f64);
+                    let clamped = scaled.clamp(GLint::MIN as f64, GLint::MAX as f64);
+                    *params.add(i) = clamped.round() as GLint;
+                }
+            }
+            _ => {
+                // Fallback for unknown/future param types: pass through to
+                // the host driver and hope for the best, rather than
+                // crashing the whole emulator.
+                gl21::GetIntegerv(pname, params);
+            }
+        }
     }
     unsafe fn GetTexEnviv(&mut self, target: GLenum, pname: GLenum, params: *mut GLint) {
         let (type_, _count) = TEX_ENV_PARAMS.get_type_info(pname);
@@ -2221,30 +2325,69 @@ impl GLES for GLES1OnGL2<'_> {
 
     // Matrix stack operations
     unsafe fn MatrixMode(&mut self, mode: GLenum) {
-        assert!(mode == gl21::MODELVIEW || mode == gl21::PROJECTION || mode == gl21::TEXTURE);
+        if mode != gl21::MODELVIEW && mode != gl21::PROJECTION && mode != gl21::TEXTURE {
+            // Modes such as GL_MATRIX_PALETTE_OES (0x8840) come from
+            // OES_matrix_palette, which desktop GL 2.1 can't emulate via the
+            // fixed-function pipeline. Apps that use it normally check for the
+            // extension first and fall back to CPU skinning (we no longer
+            // advertise it), but tolerate a stray call here instead of
+            // panicking, and suppress matrix writes until a supported mode is
+            // selected again so we don't clobber the real matrices.
+            if !self.state.unsupported_matrix_mode {
+                log!(
+                    "Warning: glMatrixMode({:#x}) selected an unsupported matrix mode; \
+                     ignoring matrix-stack writes until a supported mode is selected",
+                    mode
+                );
+            }
+            self.state.unsupported_matrix_mode = true;
+            return;
+        }
+        self.state.unsupported_matrix_mode = false;
         gl21::MatrixMode(mode);
     }
     unsafe fn LoadIdentity(&mut self) {
+        if self.state.unsupported_matrix_mode {
+            return;
+        }
         gl21::LoadIdentity();
     }
     unsafe fn LoadMatrixf(&mut self, m: *const GLfloat) {
+        if self.state.unsupported_matrix_mode {
+            return;
+        }
         gl21::LoadMatrixf(m);
     }
     unsafe fn LoadMatrixx(&mut self, m: *const GLfixed) {
+        if self.state.unsupported_matrix_mode {
+            return;
+        }
         let matrix = matrix_fixed_to_float(m);
         gl21::LoadMatrixf(matrix.as_ptr());
     }
     unsafe fn MultMatrixf(&mut self, m: *const GLfloat) {
+        if self.state.unsupported_matrix_mode {
+            return;
+        }
         gl21::MultMatrixf(m);
     }
     unsafe fn MultMatrixx(&mut self, m: *const GLfixed) {
+        if self.state.unsupported_matrix_mode {
+            return;
+        }
         let matrix = matrix_fixed_to_float(m);
         gl21::MultMatrixf(matrix.as_ptr());
     }
     unsafe fn PushMatrix(&mut self) {
+        if self.state.unsupported_matrix_mode {
+            return;
+        }
         gl21::PushMatrix();
     }
     unsafe fn PopMatrix(&mut self) {
+        if self.state.unsupported_matrix_mode {
+            return;
+        }
         gl21::PopMatrix();
     }
     unsafe fn Orthof(

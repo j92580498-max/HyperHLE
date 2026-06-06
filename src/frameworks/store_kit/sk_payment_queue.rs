@@ -27,6 +27,7 @@ impl State {
     }
 }
 
+#[derive(Default)]
 struct SKPaymentQueueHostObject {
     /// SKPaymentTransactionObserver — weak reference
     observer: id,

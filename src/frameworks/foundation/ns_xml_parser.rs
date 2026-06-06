@@ -19,6 +19,7 @@ use quick_xml::reader::Reader;
 /// Maximum consecutive errors before giving up on recovery.
 const MAX_CONSECUTIVE_ERRORS: usize = 50;
 
+#[derive(Default)]
 struct NSXMLParserHostObject {
     data: id,
     delegate: id,

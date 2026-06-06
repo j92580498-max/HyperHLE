@@ -177,6 +177,7 @@ fn locale_identifier(language: &str, country: &str) -> String {
 
 // MARK: - Host object
 
+#[derive(Default)]
 struct NSLocaleHostObject {
     country_code: id,  // NSString* — retained
     language_code: id, // NSString* — retained

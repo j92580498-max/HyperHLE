@@ -195,6 +195,15 @@ pub fn ExtAudioFileWrapAudioFileID(
                 byte_count: *byte_count,
                 packet_count: *packet_count,
             },
+            AudioFileHostObject::Writable {
+                format,
+                ref data,
+                ref user_data,
+            } => AudioFileHostObject::Writable {
+                format: *format,
+                data: data.clone(),
+                user_data: user_data.clone(),
+            },
         }
     };
 
@@ -320,6 +329,11 @@ pub fn ExtAudioFileGetProperty(
                     packet_count,
                     ..
                 } => (*packet_count * format.frames_per_packet as u64) as i64,
+                AudioFileHostObject::Writable { format, ref data, .. } => {
+                    let bpp = format.bytes_per_packet;
+                    let fpp = format.frames_per_packet;
+                    if bpp > 0 { (data.len() as i64 * fpp as i64) / bpp as i64 } else { 0 }
+                }
             };
             env.mem.write(out_property_data.cast(), total_frames);
         }
@@ -452,6 +466,9 @@ pub fn ExtAudioFileRead(
         AudioFileHostObject::Dummy { format, .. } => {
             (format.frames_per_packet, format.bytes_per_packet)
         }
+        AudioFileHostObject::Writable { format, .. } => {
+            (format.frames_per_packet, format.bytes_per_packet)
+        }
     };
 
     if frames_per_packet == 0 || packet_size == 0 {
@@ -489,6 +506,17 @@ pub fn ExtAudioFileRead(
             }
             let max_read = byte_count.saturating_sub(starting_byte);
             std::cmp::min(bytes_to_read as u64, max_read) as usize
+        }
+        AudioFileHostObject::Writable { ref data, .. } => {
+            let start = starting_byte as usize;
+            if start >= data.len() {
+                0
+            } else {
+                let available = data.len() - start;
+                let to_copy = std::cmp::min(bytes_to_read as usize, available);
+                buffer_slice[..to_copy].copy_from_slice(&data[start..start + to_copy]);
+                to_copy
+            }
         }
     };
 
@@ -634,6 +662,7 @@ fn build_asbd(audio_file: &AudioFileHostObject) -> AudioStreamBasicDescription {
             }
         }
         AudioFileHostObject::Dummy { format, .. } => *format,
+        AudioFileHostObject::Writable { format, .. } => *format,
     }
 }
 

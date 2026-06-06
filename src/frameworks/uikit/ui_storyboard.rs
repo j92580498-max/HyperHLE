@@ -51,6 +51,7 @@ pub const CONSTANTS: ConstantExports = &[
 ];
 
 /// Per-storyboard host state captured at `+storyboardWithName:bundle:` time.
+#[derive(Default)]
 struct UIStoryboardHostObject {
     /// User-visible name (e.g. `"Main"`).
     /// `NSString*` (retained).

@@ -38,6 +38,7 @@ pub const UIDataDetectorTypeCalendarEvent: UIDataDetectorTypes = 1 << 3;
 pub const UIDataDetectorTypeNone: UIDataDetectorTypes = 0;
 pub const UIDataDetectorTypeAll: UIDataDetectorTypes = u32::MAX as UIDataDetectorTypes;
 
+#[derive(Default)]
 struct UIWebViewHostObject {
     superclass: UIViewHostObject,
     /// UIWebViewDelegate — weak reference (no retain per Apple docs)

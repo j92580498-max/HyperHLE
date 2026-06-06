@@ -35,6 +35,7 @@ pub const MF_MESSAGE_COMPOSE_RESULT_FAILED: MFMessageComposeResult = 2;
 // MARK: - MFMailComposeViewController host object
 // =========================================================================
 
+#[derive(Default)]
 struct MFMailComposeViewControllerHostObject {
     mail_compose_delegate: id,
     subject: id,
@@ -52,6 +53,7 @@ impl HostObject for MFMailComposeViewControllerHostObject {}
 // MARK: - MFMessageComposeViewController host object
 // =========================================================================
 
+#[derive(Default)]
 struct MFMessageComposeViewControllerHostObject {
     message_compose_delegate: id,
     /// NSArray* of NSString* recipients (phone numbers / email addresses)

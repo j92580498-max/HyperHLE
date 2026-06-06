@@ -5,10 +5,12 @@ use crate::objc_classes;
 // HOST OBJECTS
 // =====================================================================
 
+#[derive(Default)]
 pub(super) struct CAValueFunctionHostObject {
     name: id,
 }
 
+#[derive(Default)]
 pub(super) struct CASpringAnimationHostObject {
     // CAAnimation & CAMediaTiming
     duration: f64,
@@ -39,6 +41,7 @@ pub(super) struct CASpringAnimationHostObject {
     settling_duration: f64,
 }
 
+#[derive(Default)]
 pub(super) struct CAKeyframeAnimationHostObject {
     // CAAnimation & CAMediaTiming
     duration: f64,

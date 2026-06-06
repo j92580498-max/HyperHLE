@@ -39,6 +39,7 @@ pub const kCGColorSpaceModelIndexed: CGColorSpaceModel = 5;
 #[allow(dead_code)]
 pub const kCGColorSpaceModelPattern: CGColorSpaceModel = 6;
 
+#[derive(Default)]
 pub(super) struct CGColorSpaceHostObject {
     pub(super) name: &'static str,
 }

@@ -5,7 +5,7 @@
  */
 //! `CGContext.h`
 
-use super::cg_affine_transform::CGAffineTransform;
+use super::cg_affine_transform::{CGAffineTransform, CGAffineTransformIdentity};
 use super::cg_image::CGImageRef;
 use super::{cg_bitmap_context, cg_color, CGFloat, CGPoint, CGRect};
 use crate::dyld::{export_c_func, FunctionExports};
@@ -50,6 +50,7 @@ pub const CLASSES: ClassExports = objc_classes! {
 
 };
 
+#[derive(Default)]
 pub(super) struct CGContextHostObject {
     pub(super) subclass: CGContextSubclass,
     pub(super) rgb_fill_color: (CGFloat, CGFloat, CGFloat, CGFloat),
@@ -67,6 +68,8 @@ pub(super) struct CGContextHostObject {
     /// Current font size in points.
     pub(super) font_size: CGFloat,
     pub(super) transform: CGAffineTransform,
+    /// Text transform for glyph drawing (see `CGContextSetTextMatrix`).
+    pub(super) text_transform: Option<CGAffineTransform>,
     /// (fill, stroke, alpha, line_width, line_cap, line_join, miter_limit,
     ///  flatness, blend_mode, transform)
     pub(super) state_stack: Vec<CGContextState>,
@@ -129,6 +132,13 @@ pub(super) struct CGContextState {
 
 pub(super) enum CGContextSubclass {
     CGBitmapContext(cg_bitmap_context::CGBitmapContextData),
+}
+impl Default for CGContextSubclass {
+    // Phantom-fallback for the objc `borrow` path; a default bitmap context
+    // with zero dimensions is the cheapest stable state.
+    fn default() -> Self {
+        CGContextSubclass::CGBitmapContext(Default::default())
+    }
 }
 
 pub type CGContextRef = CFTypeRef;
@@ -1153,7 +1163,16 @@ fn CGContextSetTextDrawingMode(_env: &mut Environment, _context: CGContextRef, _
 fn CGContextSetCharacterSpacing(_env: &mut Environment, _context: CGContextRef, _spacing: CGFloat) {
 }
 
-fn CGContextSetTextMatrix(_env: &mut Environment, _context: CGContextRef, _t: CGAffineTransform) {}
+fn CGContextSetTextMatrix(
+    env: &mut Environment,
+    context: CGContextRef,
+    transform: CGAffineTransform,
+) {
+    log_dbg!("CGContextSetTextMatrix({:?})", transform);
+    env.objc
+        .borrow_mut::<CGContextHostObject>(context)
+        .text_transform = Some(transform);
+}
 
 fn CGContextSelectFont(
     _env: &mut Environment,
@@ -1233,7 +1252,11 @@ fn CGContextShowGlyphsAtPoint(
         glyph_ids.push(rusttype::GlyphId(glyph_id));
     }
 
-    let font_size = env.objc.borrow::<CGContextHostObject>(context).font_size;
+    let host = env.objc.borrow::<CGContextHostObject>(context);
+    let font_size = host.font_size;
+    let text_transform = host
+        .text_transform
+        .unwrap_or(CGAffineTransformIdentity);
 
     let mut drawer = CGBitmapContextDrawer::new(&env.objc, &mut env.mem, context);
     let fill_color = drawer.rgb_fill_color();
@@ -1243,15 +1266,21 @@ fn CGContextShowGlyphsAtPoint(
     // on env.mem and on the bitmap context's host object, but it does not
     // need the font host object.
     let rusttype_font = &env.objc.borrow::<CGFontHostObject>(font).font;
-    rusttype_font.draw_glyphs(font_size, glyph_ids, (x, y), |raster_glyph| {
-        uikit::ui_font::draw_font_glyph(
-            &mut drawer,
-            raster_glyph,
-            fill_color,
-            /* clip_x: */ None,
-            /* clip_y: */ None,
-        )
-    });
+    rusttype_font.draw_glyphs(
+        font_size,
+        glyph_ids,
+        (x, y),
+        text_transform,
+        |raster_glyph| {
+            uikit::ui_font::draw_font_glyph(
+                &mut drawer,
+                raster_glyph,
+                fill_color,
+                /* clip_x: */ None,
+                /* clip_y: */ None,
+            )
+        },
+    );
 }
 
 /// `void CGContextShowGlyphsAtPositions(CGContextRef c,

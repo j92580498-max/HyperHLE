@@ -41,6 +41,7 @@ pub const NSStreamSSLSettings: &str = "NSStreamSSLSettings";
 
 // MARK: - Host objects
 
+#[derive(Default)]
 enum InputStreamBacking {
     /// Backed by an in-memory `NSData*`
     Data { data: id, offset: usize },
@@ -51,9 +52,11 @@ enum InputStreamBacking {
         offset: usize,
     },
     /// No backing (e.g. network stream stub).
+    #[default]
     None,
 }
 
+#[derive(Default)]
 struct NSInputStreamHostObject {
     backing: InputStreamBacking,
     status: NSStreamStatus,
@@ -62,15 +65,18 @@ struct NSInputStreamHostObject {
 }
 impl HostObject for NSInputStreamHostObject {}
 
+#[derive(Default)]
 enum OutputStreamBacking {
     /// Buffer grows into a `Vec<u8>`.
     Memory { buffer: Vec<u8> },
     /// File output — stubbed, writes discarded.
     File { path: id },
     /// No backing.
+    #[default]
     None,
 }
 
+#[derive(Default)]
 struct NSOutputStreamHostObject {
     backing: OutputStreamBacking,
     status: NSStreamStatus,

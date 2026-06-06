@@ -42,6 +42,7 @@ pub const NSDateFormatterBehavior10_4: NSDateFormatterBehavior = 1040;
 /// Apple uses `NSDateFormatterBehavior10_4` on iOS, and so do we.
 const DEFAULT_FORMATTER_BEHAVIOR: NSDateFormatterBehavior = NSDateFormatterBehavior10_4;
 
+#[derive(Default)]
 struct NSDateFormatterHostObject {
     /// `NSString*` — custom format string, nil if using style
     date_format: id,

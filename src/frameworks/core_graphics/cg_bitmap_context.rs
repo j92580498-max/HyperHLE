@@ -25,6 +25,7 @@ use crate::objc::ObjC;
 use crate::Environment;
 
 #[derive(Copy, Clone)]
+#[derive(Default)]
 pub(super) struct CGBitmapContextData {
     pub(super) data: MutVoidPtr,
     pub(super) data_is_owned: bool,
@@ -91,6 +92,7 @@ pub fn CGBitmapContextCreate(
             alpha_info: bitmap_info & kCGBitmapAlphaInfoMask,
         }),
         transform: CGAffineTransformIdentity,
+        text_transform: None,
         rgb_fill_color: (0.0, 0.0, 0.0, 1.0),
         rgb_stroke_color: (0.0, 0.0, 0.0, 1.0),
         alpha: 1.0,

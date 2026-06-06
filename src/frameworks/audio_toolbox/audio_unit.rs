@@ -339,6 +339,35 @@ fn AudioUnitSetProperty(
                     enabled
                 );
             }
+            kAudioUnitProperty_ElementCount => {
+                // Apple docs: kAudioUnitProperty_ElementCount (11)
+                // Sets the number of input or output buses (elements) on a
+                // multi-bus audio unit such as the 3D Mixer or Matrix Mixer.
+                // scope=1 (Input) sets how many input buses exist;
+                // scope=2 (Output) sets output bus count.
+                // We pre-allocate the requested number of MixerBusState
+                // entries so that subsequent per-bus Set/Get calls find
+                // an existing entry rather than creating one on the fly.
+                let count: u32 = env.mem.read::<u32, false>(in_data.cast());
+                log_dbg!(
+                    "AudioUnitSetProperty(ElementCount) \
+                     unit={:?} scope={} element={} count={}",
+                    in_unit,
+                    in_scope,
+                    in_element,
+                    count
+                );
+                // Only the Input scope bus-count is meaningful for the
+                // 3D Mixer / MultiChannelMixer.  Pre-populate entries so
+                // that subsequent per-bus property calls find an existing slot.
+                if in_scope == kAudioUnitScope_Input {
+                    for bus_idx in 0..count {
+                        host_object.mixer_buses.entry(bus_idx).or_default();
+                    }
+                }
+                // Output / Global element counts are accepted silently —
+                // there is nothing extra to initialise on our side.
+            }
             _ => {
                 log!(
                     "AudioUnitSetProperty: UNHANDLED property {} \

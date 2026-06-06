@@ -18,7 +18,7 @@ use crate::Environment;
 pub type CFUUIDRef = CFTypeRef;
 
 /// 16-byte UUID stored as raw bytes.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
 #[repr(C, packed)]
 pub struct CFUUIDBytes {
     pub byte0: u8,
@@ -40,6 +40,7 @@ pub struct CFUUIDBytes {
 }
 unsafe impl SafeRead for CFUUIDBytes {}
 
+#[derive(Default)]
 struct CFUUIDHostObject {
     bytes: CFUUIDBytes,
 }

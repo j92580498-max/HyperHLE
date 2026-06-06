@@ -68,6 +68,7 @@ pub const CLASSES: ClassExports = objc_classes! {
 @end
 };
 
+#[derive(Default)]
 struct CGImageHostObject {
     image: Image,
 }

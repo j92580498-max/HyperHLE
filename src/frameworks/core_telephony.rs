@@ -38,6 +38,7 @@ const DEFAULT_ALLOWS_VOIP: bool = true;
 
 // MARK: - Host objects
 
+#[derive(Default)]
 struct CTCarrierHostObject {
     /// `NSString*` — never `nil` on Apple. We retain whatever string was
     /// installed in the carrier; a default instance gets a static string.
@@ -53,6 +54,7 @@ struct CTCarrierHostObject {
 }
 impl HostObject for CTCarrierHostObject {}
 
+#[derive(Default)]
 struct CTTelephonyNetworkInfoHostObject {
     /// `CTCarrier*` — owned by this info object. Lazily created the first
     /// time `subscriberCellularProvider` is queried so that we don't allocate

@@ -14,8 +14,10 @@
 //! but it is not the current focus of the touchHLE. The current focus is,
 //! you know, **GAMES**.
 
+use crate::abi::GuestArg;
 use crate::dyld::{ConstantExports, HostConstant, HostDylib};
 use crate::frameworks::foundation::ns_string;
+use crate::mem::SafeRead;
 use crate::objc::{
     id, msg, msg_class, nil, objc_classes, release, retain, ClassExports, HostObject, NSZonePtr,
 };
@@ -40,6 +42,31 @@ type CLAuthorizationStatus = i32;
 type CLDeviceOrientation = i32;
 type CLActivityType = i32;
 
+// MARK: - CLLocationCoordinate2D
+
+/// A geographical coordinate (latitude/longitude pair), matching Apple's
+/// `CLLocationCoordinate2D` struct layout on 32-bit ARM.
+#[derive(Copy, Clone, Debug, Default)]
+#[repr(C, packed)]
+pub struct CLLocationCoordinate2D {
+    pub latitude: CLLocationDegrees,
+    pub longitude: CLLocationDegrees,
+}
+unsafe impl SafeRead for CLLocationCoordinate2D {}
+impl GuestArg for CLLocationCoordinate2D {
+    const REG_COUNT: usize = 4; // 2 x f64, each f64 = 2 u32 registers
+    fn from_regs(regs: &[u32]) -> Self {
+        CLLocationCoordinate2D {
+            latitude: f64::from_regs(&regs[0..2]),
+            longitude: f64::from_regs(&regs[2..4]),
+        }
+    }
+    fn to_regs(self, regs: &mut [u32]) {
+        self.latitude.to_regs(&mut regs[0..2]);
+        self.longitude.to_regs(&mut regs[2..4]);
+    }
+}
+
 // MARK: - CLAuthorizationStatus constants
 const CL_AUTHORIZATION_STATUS_NOT_DETERMINED: CLAuthorizationStatus = 0;
 const CL_AUTHORIZATION_STATUS_RESTRICTED: CLAuthorizationStatus = 1;
@@ -60,6 +87,7 @@ const CL_ACTIVITY_TYPE_OTHER_NAVIGATION: CLActivityType = 4;
 
 // MARK: - CLLocationManager host object
 
+#[derive(Default)]
 struct CLLocationManagerHostObject {
     delegate: id,
     desired_accuracy: CLLocationAccuracy,
@@ -77,6 +105,7 @@ impl HostObject for CLLocationManagerHostObject {}
 
 // MARK: - CLLocation host object
 
+#[derive(Default)]
 struct CLLocationHostObject {
     latitude: CLLocationDegrees,
     longitude: CLLocationDegrees,
@@ -92,6 +121,7 @@ impl HostObject for CLLocationHostObject {}
 
 // MARK: - CLHeading host object
 
+#[derive(Default)]
 struct CLHeadingHostObject {
     magnetic_heading: CLHeadingComponentValue,
     true_heading: CLHeadingComponentValue,
@@ -397,6 +427,27 @@ const CLASSES: ClassExports = objc_classes! {
         host.vertical_accuracy   = v_acc;
     }
     let ts: id = msg_class![env; NSDate date];
+    env.objc.borrow_mut::<CLLocationHostObject>(this).timestamp = ts;
+    this
+}
+
+// Apple's full initializer:
+// - (id)initWithCoordinate:altitude:horizontalAccuracy:verticalAccuracy:timestamp:
+// where coordinate is a CLLocationCoordinate2D struct.
+- (id)initWithCoordinate:(CLLocationCoordinate2D)coord
+               altitude:(CLLocationDistance)alt
+     horizontalAccuracy:(CLLocationAccuracy)h_acc
+       verticalAccuracy:(CLLocationAccuracy)v_acc
+              timestamp:(id)ts {
+    {
+        let host = env.objc.borrow_mut::<CLLocationHostObject>(this);
+        host.latitude  = coord.latitude;
+        host.longitude = coord.longitude;
+        host.altitude  = alt;
+        host.horizontal_accuracy = h_acc;
+        host.vertical_accuracy   = v_acc;
+    }
+    retain(env, ts);
     env.objc.borrow_mut::<CLLocationHostObject>(this).timestamp = ts;
     this
 }

@@ -46,6 +46,7 @@ pub struct State {
     run_loops: HashMap<ThreadId, id>,
 }
 
+#[derive(Default)]
 pub(crate) struct NSRunLoopHostObject {
     audio_units: Vec<AudioUnit>,
     /// Weak reference. Audio queue must remove itself when destroyed (TODO).

@@ -14,6 +14,7 @@ use crate::objc::{
 use crate::Environment;
 use std::time::{Duration, Instant};
 
+#[derive(Default)]
 struct NSTimerHostObject {
     ns_interval: NSTimeInterval,
     /// Copy of `ns_interval` in Rust's type for time intervals. Keep in sync!

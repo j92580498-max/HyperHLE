@@ -106,6 +106,7 @@ pub const FUNCTIONS: FunctionExports = &[
 ];
 
 /// Belongs to _touchHLE_CFTimerTarget
+#[derive(Default)]
 struct CFTimerTargetHostObject {
     callout: GuestFunction,
     info: MutVoidPtr,

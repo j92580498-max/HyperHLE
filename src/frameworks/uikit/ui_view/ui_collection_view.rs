@@ -90,6 +90,7 @@ impl Default for UICollectionReusableViewHostObject {
 // MARK: - UICollectionViewLayout host object
 // ============================================================================
 
+#[derive(Default)]
 struct UICollectionViewLayoutHostObject {
     collection_view: id, // weak back-pointer
 }

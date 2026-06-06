@@ -11,6 +11,7 @@
 //!
 //! - Apple's [iOS Manual Pages](https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/) (contains what would be `man` pages if iOS had a command line)
 
+pub mod aio;
 pub mod arpa;
 pub mod asl;
 pub mod blocks;
@@ -33,6 +34,7 @@ pub mod keymgr;
 pub mod libkern;
 pub mod mach;
 pub mod mach_o;
+pub mod malloc;
 pub mod math;
 pub mod mmap;
 pub mod net;
@@ -56,7 +58,20 @@ pub mod wchar;
 
 pub const DYLIB: crate::dyld::HostDylib = crate::dyld::HostDylib {
     path: "/usr/lib/libSystem.B.dylib",
-    aliases: &["/usr/lib/libSystem.dylib"],
+    aliases: &[
+        "/usr/lib/libSystem.dylib",
+        // Many iOS apps (especially Unity/Mono-based) attempt to dlopen libc
+        // under various names. On Darwin, libc is part of libSystem — these
+        // aliases let dlopen succeed instead of returning NULL.
+        "/usr/lib/libc.dylib",
+        "libc.dylib",
+        "libc.so",
+        "libc.bundle",
+        "./libc.dylib",
+        "./libc.so",
+        "./libc.bundle",
+        "libc",
+    ],
     class_exports: &[],
     constant_exports: &[
         ctype::CONSTANTS,
@@ -70,6 +85,7 @@ pub const DYLIB: crate::dyld::HostDylib = crate::dyld::HostDylib {
         ssp::CONSTANTS,
     ],
     function_exports: &[
+        aio::FUNCTIONS,
         arpa::inet::FUNCTIONS,
         asl::FUNCTIONS,
         blocks::FUNCTIONS,
@@ -100,6 +116,7 @@ pub const DYLIB: crate::dyld::HostDylib = crate::dyld::HostDylib {
         mach::time::FUNCTIONS,
         mach::vm_map::FUNCTIONS,
         mach_o::FUNCTIONS,
+        malloc::FUNCTIONS,
         math::FUNCTIONS,
         mmap::FUNCTIONS,
         net::if_::FUNCTIONS,
@@ -140,12 +157,14 @@ pub const DYLIB: crate::dyld::HostDylib = crate::dyld::HostDylib {
 /// Container for state of various child modules
 #[derive(Default)]
 pub struct State {
+    aio: aio::State,
     dirent: dirent::State,
     dispatch: dispatch::State,
     keymgr: keymgr::State,
+    malloc: malloc::State,
     math: math::State,
     netdb: netdb::State,
-    posix_io: posix_io::State,
+    pub posix_io: posix_io::State,
     pub pthread: pthread::State,
     pub semaphore: semaphore::State,
     pub socket: sys::socket::State,

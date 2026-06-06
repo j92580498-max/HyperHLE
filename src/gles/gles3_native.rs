@@ -1051,6 +1051,14 @@ impl GLES for GLES3Native<'_> {
     unsafe fn GetVertexAttribfv(&mut self, index: GLuint, pname: GLenum, params: *mut GLfloat) {
         gles30::GetVertexAttribfv(index, pname, params)
     }
+    unsafe fn GetVertexAttribPointerv(
+        &mut self,
+        index: GLuint,
+        pname: GLenum,
+        pointer: *mut *mut GLvoid,
+    ) {
+        gles30::GetVertexAttribPointerv(index, pname, pointer)
+    }
 
     // Uniforms
     unsafe fn Uniform1f(&mut self, location: GLint, v0: GLfloat) {

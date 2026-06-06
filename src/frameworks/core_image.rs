@@ -21,6 +21,7 @@ use crate::objc::{autorelease, id, msg, nil, objc_classes, ClassExports, HostObj
 /// own colour model: RGBA components in [0.0, 1.0] plus a colour space.
 /// We keep components in sRGB / "device RGB" (CoreImage's default working
 /// space) which matches what `+colorWithCIColor:` on `UIColor` expects.
+#[derive(Default)]
 struct CIColorHostObject {
     red: CGFloat,
     green: CGFloat,

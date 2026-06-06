@@ -12,6 +12,7 @@ use crate::objc::{
     ClassExports, NSZonePtr,
 };
 
+#[derive(Default)]
 struct UIPageControlHostObject {
     superclass: UIControlHostObject,
     number_of_pages: NSInteger,

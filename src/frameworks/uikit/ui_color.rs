@@ -46,6 +46,7 @@ fn get_standard_color(
     }
 }
 
+#[derive(Default)]
 struct UIColorHostObject {
     cg_color: CGColorRef,
     /// Non-nil when this color was created via `colorWithPatternImage:`.

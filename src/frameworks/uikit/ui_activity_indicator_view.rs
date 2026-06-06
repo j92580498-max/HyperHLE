@@ -13,6 +13,7 @@ use crate::objc::{
 
 type UIActivityIndicatorViewStyle = NSInteger;
 
+#[derive(Default)]
 pub struct UIActivityIndicatorViewHostObject {
     superclass: super::ui_view::UIViewHostObject,
     animating: bool,

@@ -16,6 +16,7 @@ use crate::objc::{
 // MARK: - NSCondition host object
 // =========================================================================
 
+#[derive(Default)]
 struct NSConditionHostObject {
     /// Name NSString* — for debugging.
     name: id,
@@ -32,6 +33,7 @@ impl HostObject for NSConditionHostObject {}
 // MARK: - NSConditionLock host object
 // =========================================================================
 
+#[derive(Default)]
 struct NSConditionLockHostObject {
     name: id,
     /// The current condition value.

@@ -314,6 +314,7 @@ pub struct State {
 }
 
 // ДОБАВЛЕНО: Полноценный объект состояния (без заглушек)
+#[derive(Default)]
 pub(super) struct AVAudioSessionHostObject {
     category: id,
     category_options: AVAudioSessionCategoryOptions,

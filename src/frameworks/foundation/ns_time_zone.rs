@@ -70,6 +70,7 @@ fn name_for_abbr(abbr: &str) -> Option<&'static str> {
         .map(|r| r.0)
 }
 
+#[derive(Default)]
 struct NSTimeZoneHostObject {
     /// NSString* — the IANA zone name (or abbreviation string for offset-only
     //zones)

@@ -41,6 +41,7 @@ enum PathElement {
     Close,
 }
 
+#[derive(Default)]
 struct CGPathHostObject {
     elements: Vec<PathElement>,
     mutable: bool,

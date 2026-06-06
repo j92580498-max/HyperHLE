@@ -8,6 +8,7 @@
 use crate::frameworks::core_graphics::{CGFloat, CGSize};
 use crate::objc::{id, objc_classes, ClassExports, HostObject, NSZonePtr};
 
+#[derive(Default)]
 pub struct UIScreenModeHostObject {
     pub size: CGSize,
     pub pixel_aspect_ratio: CGFloat,

@@ -736,10 +736,20 @@ fn gai_strerror(env: &mut Environment, ecode: i32) -> ConstPtr<u8> {
         .cast_const()
 }
 
+/// `gethostent` iterates the hosts database. We don't model one, so signal
+/// end-of-database (NULL) immediately, matching how `gethostbyname` reports an
+/// unresolved host.
+fn gethostent(_env: &mut Environment) -> MutPtr<hostent_guest> {
+    log!("TODO: gethostent() => NULL");
+    // TODO: set h_errno
+    Ptr::null()
+}
+
 pub const FUNCTIONS: FunctionExports = &[
     export_c_func!(getaddrinfo(_, _, _, _)),
     export_c_func!(freeaddrinfo(_)),
     export_c_func!(gethostbyname(_)),
+    export_c_func!(gethostent()),
     export_c_func!(gethostbyname2(_, _)),
     export_c_func!(gethostbyaddr(_, _, _)),
     export_c_func!(getservbyname(_, _)),

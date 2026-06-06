@@ -116,6 +116,7 @@ struct ScheduleEntry {
     mode: String,
 }
 
+#[derive(Default)]
 pub struct CFHostHostObject {
     /// `Some` when created via `CFHostCreateWithName`.
     pub name: Option<String>,

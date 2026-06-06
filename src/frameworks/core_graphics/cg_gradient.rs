@@ -33,6 +33,7 @@ struct ColorStop {
     a: CGFloat,
 }
 
+#[derive(Default)]
 struct CGGradientHostObject {
     stops: Vec<ColorStop>,
 }

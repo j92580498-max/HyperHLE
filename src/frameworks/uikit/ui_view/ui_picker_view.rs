@@ -14,6 +14,7 @@ use crate::objc::{
 
 // TODO: rendering
 
+#[derive(Default)]
 struct UIPickerViewHostObject {
     superclass: UIViewHostObject,
     delegate: id,

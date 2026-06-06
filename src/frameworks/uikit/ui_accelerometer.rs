@@ -30,6 +30,7 @@ type UIAccelerationValue = f64;
 
 const DEFAULT_UPDATE_INTERVAL: f64 = 1.0 / 60.0;
 
+#[derive(Default)]
 struct UIAccelerationHostObject {
     x: UIAccelerationValue,
     y: UIAccelerationValue,

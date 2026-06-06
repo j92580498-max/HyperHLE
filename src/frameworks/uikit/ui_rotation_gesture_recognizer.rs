@@ -30,6 +30,7 @@ use crate::objc::{id, objc_classes, ClassExports, HostObject, NSZonePtr};
 
 // MARK: - UIRotationGestureRecognizer host object
 
+#[derive(Default)]
 struct UIRotationGestureRecognizerHostObject {
     /// Текущий угол поворота в радианах относительно начала распознавания
     /// жеста. По умолчанию 0.

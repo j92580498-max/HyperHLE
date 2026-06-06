@@ -295,6 +295,23 @@ fn strncasecmp(env: &mut Environment, a: ConstPtr<u8>, b: ConstPtr<u8>, n: Guest
 fn strncat(env: &mut Environment, s1: MutPtr<u8>, s2: ConstPtr<u8>, n: GuestUSize) -> MutPtr<u8> {
     GenericChar::<u8>::strncat(env, s1, s2, n)
 }
+/// `__strncat_chk` — fortified variant of strncat.
+/// Per Apple's Secure Coding Guide and the GCC/Clang SSP implementation:
+/// `char *__strncat_chk(char *dest, const char *src, size_t n, size_t dest_size)`
+/// The `dest_size` parameter is the total buffer size of `dest` (as known at
+/// compile time via `__builtin_object_size`). If the concatenation would
+/// overflow, the real implementation calls `__chk_fail`. We simply delegate
+/// to the normal `strncat` since touchHLE already guards against OOB writes
+/// at the memory subsystem level.
+fn __strncat_chk(
+    env: &mut Environment,
+    dest: MutPtr<u8>,
+    src: ConstPtr<u8>,
+    n: GuestUSize,
+    _dest_size: GuestUSize,
+) -> MutPtr<u8> {
+    GenericChar::<u8>::strncat(env, dest, src, n)
+}
 fn strstr(env: &mut Environment, string: ConstPtr<u8>, substring: ConstPtr<u8>) -> ConstPtr<u8> {
     GenericChar::<u8>::strstr(env, string, substring)
 }
@@ -656,6 +673,7 @@ pub const FUNCTIONS: FunctionExports = &[
     export_c_func!(strcasecmp(_, _)),
     export_c_func!(strncasecmp(_, _, _)),
     export_c_func!(strncat(_, _, _)),
+    export_c_func!(__strncat_chk(_, _, _, _)),
     export_c_func!(strstr(_, _)),
     export_c_func!(strchr(_, _)),
     export_c_func!(index(_, _)),

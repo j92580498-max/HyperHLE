@@ -87,6 +87,7 @@ fn effective_eagl_api(requested: EAGLRenderingAPI, prefer_gles2_context: bool) -
     requested
 }
 
+#[derive(Default)]
 pub(super) struct EAGLContextHostObject {
     pub(super) gles_ctx: Option<Box<dyn GLESContext>>,
     /// Which EAGL rendering API was requested. This influences how

@@ -444,6 +444,62 @@ pub const CLASSES: ClassExports = objc_classes! {
 
 @end
 
+// UIRuntimeOutletCollectionConnection is used by NIBs compiled with Xcode 4+
+// for IBOutletCollection properties. Unlike a regular outlet (single object),
+// an outlet collection appends its destination to an NSMutableArray stored
+// under the given key on the source object.
+//
+// Apple's runtime implementation:
+// 1. Gets the existing array via [source valueForKey:label]
+// 2. If nil, creates a new NSMutableArray and sets it via setValue:forKey:
+// 3. Adds the destination to the array via addObject:
+//
+// Reference: https://developer.apple.com/library/archive/documentation/General/Conceptual/CocoaEncyclopedia/OutletCollections/OutletCollections.html
+@implementation UIRuntimeOutletCollectionConnection: UIRuntimeConnection
+
++ (id)alloc {
+    let host_object = Box::<UIRuntimeConnectionHostObject>::default();
+    env.objc.alloc_object(this, host_object, &mut env.mem)
+}
+
+- (())connect {
+    let &UIRuntimeConnectionHostObject { destination, label, source } = env.objc.borrow(this);
+
+    if source == nil || destination == nil || label == nil {
+        return;
+    }
+
+    let label_str = to_rust_string(env, label);
+    log_dbg!(
+        "UIRuntimeOutletCollectionConnection: connecting outlet collection '{}' on {:?} -> {:?}",
+        label_str, source, destination
+    );
+
+    // Try to get the existing array for this key
+    let existing_array: id = msg![env; source valueForKey:label];
+
+    if existing_array != nil {
+        // Array already exists, just add the destination to it
+        () = msg![env; existing_array addObject:destination];
+    } else {
+        // Create a new NSMutableArray, add the destination, and set it
+        let new_array: id = msg_class![env; NSMutableArray new];
+        () = msg![env; new_array addObject:destination];
+        () = msg![env; source setValue:new_array forKey:label];
+        release(env, new_array);
+    }
+}
+
+- (())dealloc {
+    let &UIRuntimeConnectionHostObject { destination, label, source } = env.objc.borrow(this);
+    release(env, destination);
+    release(env, label);
+    release(env, source);
+    env.objc.dealloc_object(this, &mut env.mem)
+}
+
+@end
+
 };
 
 fn load_nib_file(env: &mut Environment, ui_nib: id, path: GuestPathBuf) -> Result<id, ()> {

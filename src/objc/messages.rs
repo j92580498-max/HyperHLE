@@ -194,13 +194,35 @@ fn objc_msgSend_inner(
     }
 
     let orig_class = super2.unwrap_or_else(|| ObjC::read_isa(receiver, &env.mem));
-    // Мягкий выход, если isa равен nil
+    // Graceful exit if isa is nil — this typically means the object was
+    // already deallocated (use-after-free in guest code) or was never
+    // properly allocated. Per Apple's Objective-C runtime behavior,
+    // messaging a deallocated object is undefined behavior, but we handle
+    // it gracefully by returning nil/0 instead of crashing.
     if orig_class == nil {
-        log!(
-            "Warning: receiver {:?} has nil isa! Ignoring message \"{}\".",
-            receiver,
-            selector.as_str(&env.mem)
-        );
+        // Rate-limit these warnings to avoid flooding the log when the
+        // guest app has a use-after-free bug that triggers repeatedly.
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static NIL_ISA_COUNT: AtomicUsize = AtomicUsize::new(0);
+        const NIL_ISA_LOG_LIMIT: usize = 8;
+        let count = NIL_ISA_COUNT.fetch_add(1, Ordering::Relaxed);
+        if count < NIL_ISA_LOG_LIMIT {
+            log!(
+                "Warning: receiver {:?} has nil isa! Ignoring message \"{}\". \
+                 (This usually means the object was already freed — use-after-free \
+                 in guest code.) [{}/{}]",
+                receiver,
+                selector.as_str(&env.mem),
+                count + 1,
+                NIL_ISA_LOG_LIMIT,
+            );
+        } else if count == NIL_ISA_LOG_LIMIT {
+            log!(
+                "Warning: suppressing further nil-isa warnings ({} already logged). \
+                 The guest app has use-after-free bugs.",
+                NIL_ISA_LOG_LIMIT,
+            );
+        }
         env.cpu.regs_mut()[0..2].fill(0);
         return;
     }

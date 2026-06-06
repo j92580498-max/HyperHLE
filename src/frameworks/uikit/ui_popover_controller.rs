@@ -23,6 +23,7 @@ pub const UIPopoverArrowDirectionAny: UIPopoverArrowDirection = UIPopoverArrowDi
     | UIPopoverArrowDirectionRight;
 pub const UIPopoverArrowDirectionUnknown: UIPopoverArrowDirection = NSUInteger::MAX;
 
+#[derive(Default)]
 struct UIPopoverControllerHostObject {
     /// The content view controller displayed inside the popover.
     content_view_controller: id,

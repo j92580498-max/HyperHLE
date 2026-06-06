@@ -357,7 +357,8 @@ pub struct Mem {
 impl Drop for Mem {
     fn drop(&mut self) {
         unsafe {
-            crate::mem::host::free_memory(self.bytes.cast(), std::mem::size_of::<Bytes>()).unwrap();
+            crate::mem::host::free_guest_memory(self.bytes.cast(), std::mem::size_of::<Bytes>())
+                .unwrap();
             // Free the read stub page
             if !self.null_stub_page.is_null() {
                 crate::mem::host::free_memory(self.null_stub_page.cast(), PAGE_SIZE as usize)
@@ -389,7 +390,7 @@ impl Mem {
     /// Create a fresh instance of guest memory.
     pub fn new() -> Mem {
         let size = std::mem::size_of::<Bytes>();
-        let ptr = unsafe { crate::mem::host::allocate_memory(size).unwrap() };
+        let ptr = unsafe { crate::mem::host::allocate_guest_memory(size).unwrap() };
 
         assert_eq!(
             ptr as usize & PAGE_SIZE_ALIGN_MASK as usize,
@@ -501,13 +502,25 @@ impl Mem {
         }
         set.insert(key);
         let op_type = if is_write { "WRITE" } else { "READ" };
+        // Provide helpful context: small offsets are typically field accesses
+        // on a nil Objective-C object pointer (nil + ivar offset). This is
+        // defined behavior in ObjC (returns 0/nil) and is NOT a crash — just
+        // a sign that the app is accessing a nil object's fields.
+        let context = if !is_write && at < 0x1000 {
+            " (likely nil ObjC object field access — returning zero)"
+        } else if is_write && at < 0x1000 {
+            " (likely nil ObjC object field write — discarding)"
+        } else {
+            " — returning stub page"
+        };
         log!(
-            "touchHLE::mem: NULL-PAGE {} at 0x{:08x} (size: 0x{:x}) from {} \
-             — returning stub page (unique sites logged: {}/{})",
+            "touchHLE::mem: NULL-PAGE {} at 0x{:08x} (size: 0x{:x}) from {}{} \
+             (unique sites logged: {}/{})",
             op_type,
             at,
             size,
             caller,
+            context,
             set.len(),
             MAX_UNIQUE_LOGS
         );
@@ -725,6 +738,15 @@ impl Mem {
         Ptr::from_bits(u32::try_from(guest_addr).unwrap())
     }
 
+    /// Returns whether a host pointer addresses a location inside the guest's
+    /// memory region. Used to sanity-check pointers that touchHLE hands to host
+    /// APIs (e.g. client-side OpenGL vertex arrays): a pointer outside this
+    /// range is wild and dereferencing it on the host would crash the emulator.
+    pub fn is_host_ptr_in_guest_mem(&self, host_ptr: *const std::ffi::c_void) -> bool {
+        let host_ptr = host_ptr.cast::<u8>();
+        self.bytes().as_ptr_range().contains(&host_ptr)
+    }
+
     /// Read a value for memory.
     /// This is the preferred way to read memory in
     /// most cases.
@@ -785,14 +807,22 @@ impl Mem {
             return;
         }
 
-        // Also reject NULL source — real memmove(dest, NULL, n) is UB
-        // but guest games (Geometry Dash) trigger it via corrupted strings.
+        // FIXED: When src is NULL, zero-fill destination instead of skipping
+        // This matches real iOS behavior for corrupted std::string internals
         if src_addr == 0 && size > 0 {
-            log!(
-                "WARNING: memmove from NULL (dest={:#x}, size={:#x}) — skipping",
-                dest_addr,
-                size_us,
-            );
+            if dest_addr != 0 && dest_addr < max {
+                let actual_size = size_us.min(max - dest_addr);
+                self.bytes_mut()[dest_addr..dest_addr + actual_size].fill(0);
+                log_dbg!(
+                    "memmove from NULL — zero-filled dest={:#x}, size={:#x}",
+                    dest_addr, actual_size
+                );
+            } else {
+                log!(
+                    "WARNING: memmove from NULL with invalid dest={:#x}, size={:#x} — skipping",
+                    dest_addr, size_us,
+                );
+            }
             return;
         }
 
@@ -1014,5 +1044,31 @@ impl Mem {
             return;
         }
         self.allocator.reserve(allocator::Chunk::new(base, size));
+    }
+}
+
+#[cfg(test)]
+mod mem_tests {
+    use super::{Mem, MutPtr, Ptr};
+
+    #[test]
+    fn lazy_commit_far_addresses() {
+        let mut mem = Mem::new();
+
+        mem.set_null_segment_size(super::PAGE_SIZE);
+
+        let probes: [u32; 6] = [
+            0x0000_1000,
+            0x1000_0000,
+            0x4000_0000,
+            0x8000_0000,
+            0xC000_0000,
+            0xFFFE_F000,
+        ];
+        for &addr in &probes {
+            let p: MutPtr<u8> = Ptr::from_bits(addr);
+            mem.write(p, 0xAB);
+            assert_eq!(mem.read(p.cast_const()), 0xAB);
+        }
     }
 }

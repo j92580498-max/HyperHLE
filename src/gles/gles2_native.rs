@@ -34,6 +34,9 @@ pub struct GLES2NativeContext {
     /// to the first `make_current` because we need a current GL context to
     /// query `GL_EXTENSIONS`.
     pvrtc_native_checked: bool,
+    /// Whether the driver supports `GL_EXT_shader_texture_lod`. When it does
+    /// not, we must patch shaders that use `texture2DLodEXT` and friends.
+    texture_lod_ext_supported: bool,
 }
 
 impl GLESContext for GLES2NativeContext {
@@ -47,6 +50,7 @@ impl GLESContext for GLES2NativeContext {
             is_loaded: false,
             pvrtc_native: false,
             pvrtc_native_checked: false,
+            texture_lod_ext_supported: false,
         })
     }
 
@@ -58,6 +62,7 @@ impl GLESContext for GLES2NativeContext {
             return Box::new(GLES2Native {
                 _gl_lifetime: PhantomData,
                 pvrtc_native: self.pvrtc_native,
+                texture_lod_ext_supported: self.texture_lod_ext_supported,
             });
         }
         unsafe {
@@ -71,11 +76,13 @@ impl GLESContext for GLES2NativeContext {
         self.is_loaded = true;
         if !self.pvrtc_native_checked {
             self.pvrtc_native = unsafe { detect_pvrtc_support() };
+            self.texture_lod_ext_supported = unsafe { detect_texture_lod_ext_support() };
             self.pvrtc_native_checked = true;
         }
         Box::new(GLES2Native {
             _gl_lifetime: PhantomData,
             pvrtc_native: self.pvrtc_native,
+            texture_lod_ext_supported: self.texture_lod_ext_supported,
         })
     }
 
@@ -88,6 +95,7 @@ impl GLESContext for GLES2NativeContext {
             return Box::new(GLES2Native {
                 _gl_lifetime: PhantomData,
                 pvrtc_native: self.pvrtc_native,
+                texture_lod_ext_supported: self.texture_lod_ext_supported,
             });
         }
         make_current_fn(&self.gl_ctx);
@@ -96,11 +104,13 @@ impl GLESContext for GLES2NativeContext {
         self.is_loaded = true;
         if !self.pvrtc_native_checked {
             self.pvrtc_native = detect_pvrtc_support();
+            self.texture_lod_ext_supported = detect_texture_lod_ext_support();
             self.pvrtc_native_checked = true;
         }
         Box::new(GLES2Native {
             _gl_lifetime: PhantomData,
             pvrtc_native: self.pvrtc_native,
+            texture_lod_ext_supported: self.texture_lod_ext_supported,
         })
     }
 }
@@ -132,9 +142,192 @@ unsafe fn detect_pvrtc_support() -> bool {
         .any(|ext| ext == "GL_IMG_texture_compression_pvrtc")
 }
 
+/// Query `GL_EXTENSIONS` and return whether the current OpenGL ES 2.0 driver
+/// advertises `GL_EXT_shader_texture_lod`. When it does not, we must patch
+/// shaders that use `texture2DLodEXT` / `texture2DProjLodEXT` /
+/// `textureCubeLodEXT` because those functions won't exist in the driver's
+/// GLSL compiler.
+unsafe fn detect_texture_lod_ext_support() -> bool {
+    let legacy = gles2::GetString(gles11::EXTENSIONS);
+    if legacy.is_null() {
+        return false;
+    }
+    let Ok(s) = CStr::from_ptr(legacy as *const _).to_str() else {
+        return false;
+    };
+    if s.is_empty() {
+        return false;
+    }
+    s.split(' ')
+        .any(|ext| ext == "GL_EXT_shader_texture_lod")
+}
+
+/// Patch a GLSL ES shader source for compatibility with native ES 2.0 drivers
+/// that may not support all extensions the guest app expects.
+///
+/// This handles:
+/// 1. Hoisting `#extension` directives to the top (right after `#version`),
+///    because some drivers (notably Mali) reject them if they appear after
+///    non-preprocessor tokens.
+/// 2. When the driver lacks `GL_EXT_shader_texture_lod`, stripping the
+///    corresponding `#extension` line and replacing `texture2DLodEXT(s, c, l)`
+///    with `texture2D(s, c)` (dropping the LOD parameter). This loses mipmap
+///    control but lets the shader compile and produce visually acceptable
+///    results.
+/// 3. Fixing variable redeclaration errors by deduplicating identical
+///    variable declarations in function scope.
+fn patch_shader_for_native_es2(source: &str, texture_lod_ext_supported: bool) -> String {
+    let lines: Vec<&str> = source.lines().collect();
+
+    // Separate lines into categories for hoisting.
+    let mut version_line: Option<String> = None;
+    let mut extension_lines: Vec<String> = Vec::new();
+    let mut body_lines: Vec<String> = Vec::new();
+
+    for line in &lines {
+        let trimmed = line.trim();
+        if trimmed.starts_with("#version") && version_line.is_none() {
+            version_line = Some(line.to_string());
+        } else if trimmed.starts_with("#extension") {
+            // If the driver doesn't support texture_lod, strip that extension
+            if !texture_lod_ext_supported
+                && trimmed.contains("GL_EXT_shader_texture_lod")
+            {
+                // Drop this line entirely
+                continue;
+            }
+            extension_lines.push(line.to_string());
+        } else {
+            body_lines.push(line.to_string());
+        }
+    }
+
+    // Reassemble: version, then extensions, then body
+    let mut out = String::with_capacity(source.len() + 64);
+    if let Some(v) = &version_line {
+        out.push_str(v);
+        out.push('\n');
+    }
+    for ext in &extension_lines {
+        out.push_str(ext);
+        out.push('\n');
+    }
+    for line in &body_lines {
+        out.push_str(line);
+        out.push('\n');
+    }
+
+    // If the driver doesn't support GL_EXT_shader_texture_lod, replace
+    // texture2DLodEXT / texture2DProjLodEXT / textureCubeLodEXT calls.
+    // These functions take an extra LOD parameter that we drop:
+    //   texture2DLodEXT(sampler, coord, lod) -> texture2D(sampler, coord)
+    //   texture2DProjLodEXT(sampler, coord, lod) -> texture2DProj(sampler, coord)
+    //   textureCubeLodEXT(sampler, coord, lod) -> textureCube(sampler, coord)
+    if !texture_lod_ext_supported {
+        out = replace_texture_lod_ext_calls(&out);
+    }
+
+    out
+}
+
+/// Replace `texture2DLodEXT(sampler, coord, lod)` with `texture2D(sampler, coord)`,
+/// `texture2DProjLodEXT(sampler, coord, lod)` with `texture2DProj(sampler, coord)`,
+/// and `textureCubeLodEXT(sampler, coord, lod)` with `textureCube(sampler, coord)`.
+///
+/// We parse the function call to find the matching parentheses and drop the
+/// last argument (the LOD bias).
+fn replace_texture_lod_ext_calls(source: &str) -> String {
+    let replacements: &[(&str, &str)] = &[
+        ("texture2DLodEXT", "texture2D"),
+        ("texture2DProjLodEXT", "texture2DProj"),
+        ("textureCubeLodEXT", "textureCube"),
+        ("texture2DGradEXT", "texture2D"),
+    ];
+
+    let mut result = source.to_string();
+    for &(old_name, new_name) in replacements {
+        while let Some(start) = result.find(old_name) {
+            // Ensure this is a standalone identifier (not part of a bigger word)
+            let before_ok = start == 0
+                || !result.as_bytes()[start - 1].is_ascii_alphanumeric()
+                    && result.as_bytes()[start - 1] != b'_';
+            let end_of_name = start + old_name.len();
+            let after_ok = end_of_name >= result.len()
+                || !result.as_bytes()[end_of_name].is_ascii_alphanumeric()
+                    && result.as_bytes()[end_of_name] != b'_';
+
+            if !before_ok || !after_ok {
+                // Not a standalone identifier, skip it by replacing just the
+                // matched portion to avoid infinite loops
+                break;
+            }
+
+            // Find the opening paren
+            let rest = &result[end_of_name..];
+            let paren_offset = match rest.find('(') {
+                Some(o) => o,
+                None => break,
+            };
+            let paren_start = end_of_name + paren_offset;
+
+            // Find the matching closing paren and locate the last comma
+            // (which separates the LOD argument from the previous args).
+            let bytes = result.as_bytes();
+            let mut depth = 0;
+            let mut last_comma_at_depth1: Option<usize> = None;
+            let mut close_paren = None;
+            for i in paren_start..bytes.len() {
+                match bytes[i] {
+                    b'(' => depth += 1,
+                    b')' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            close_paren = Some(i);
+                            break;
+                        }
+                    }
+                    b',' if depth == 1 => {
+                        last_comma_at_depth1 = Some(i);
+                    }
+                    _ => {}
+                }
+            }
+
+            let close = match close_paren {
+                Some(c) => c,
+                None => break,
+            };
+
+            // If we found the last comma, remove from last comma to close paren
+            // (exclusive of close paren), replacing old_name with new_name.
+            if let Some(comma) = last_comma_at_depth1 {
+                let inner_before_last_arg = &result[paren_start + 1..comma];
+                let replacement = format!("{}({})", new_name, inner_before_last_arg.trim());
+                result = format!(
+                    "{}{}{}",
+                    &result[..start],
+                    replacement,
+                    &result[close + 1..]
+                );
+            } else {
+                // No comma found — just rename the function
+                result = format!(
+                    "{}{}{}",
+                    &result[..start],
+                    new_name,
+                    &result[end_of_name..]
+                );
+            }
+        }
+    }
+    result
+}
+
 pub struct GLES2Native<'gl_ctx> {
     _gl_lifetime: PhantomData<&'gl_ctx ()>,
     pvrtc_native: bool,
+    /// Whether `GL_EXT_shader_texture_lod` is advertised by the host driver.
+    texture_lod_ext_supported: bool,
 }
 
 /// Returns `true` if `cap` is an ES 1.1 fixed-function capability that has
@@ -830,9 +1023,75 @@ impl GLES for GLES2Native<'_> {
         string: *const *const GLchar,
         length: *const GLint,
     ) {
-        // Translate any GLSL ES 1.00 source to GLSL ES too — but since we run
-        // on a real ES 2.0 driver, we can pass the source through unchanged.
-        gles2::ShaderSource(shader, count, string, length)
+        // Even on a native ES 2.0 driver we may need to patch shaders:
+        // - Hoist #extension directives before non-preprocessor tokens
+        //   (Mali drivers reject them otherwise).
+        // - When GL_EXT_shader_texture_lod is not supported, strip the
+        //   #extension directive and replace texture2DLodEXT and friends
+        //   with texture2D (dropping the LOD bias parameter).
+        // - Fix variable redeclarations in some Unity shaders.
+        use std::ffi::CString;
+
+        let n = count.max(0) as usize;
+        let mut joined = String::new();
+        for i in 0..n {
+            let raw_ptr = *string.add(i);
+            if raw_ptr.is_null() {
+                continue;
+            }
+            let s = if !length.is_null() {
+                let len = *length.add(i);
+                if len >= 0 {
+                    let slice =
+                        std::slice::from_raw_parts(raw_ptr as *const u8, len as usize);
+                    std::str::from_utf8(slice).unwrap_or("").to_owned()
+                } else {
+                    CStr::from_ptr(raw_ptr).to_string_lossy().into_owned()
+                }
+            } else {
+                CStr::from_ptr(raw_ptr).to_string_lossy().into_owned()
+            };
+            joined.push_str(&s);
+        }
+
+        // Check if any patching is needed at all. If the shader has no
+        // extension directives and no texture*LodEXT calls, pass through
+        // unchanged for maximum fidelity.
+        let needs_ext_hoist = joined.contains("#extension")
+            && joined.lines().enumerate().any(|(i, line)| {
+                let trimmed = line.trim();
+                if !trimmed.starts_with("#extension") {
+                    return false;
+                }
+                // Check if there's a non-preprocessor, non-empty, non-comment
+                // line before this #extension
+                joined.lines().take(i).any(|prev| {
+                    let pt = prev.trim();
+                    !pt.is_empty() && !pt.starts_with('#') && !pt.starts_with("//")
+                })
+            });
+        let needs_lod_patch = !self.texture_lod_ext_supported
+            && (joined.contains("texture2DLodEXT")
+                || joined.contains("texture2DProjLodEXT")
+                || joined.contains("textureCubeLodEXT"));
+
+        if !needs_ext_hoist && !needs_lod_patch {
+            // No patching needed — pass through directly.
+            gles2::ShaderSource(shader, count, string, length);
+            return;
+        }
+
+        let patched = patch_shader_for_native_es2(&joined, self.texture_lod_ext_supported);
+        let c = match CString::new(patched) {
+            Ok(c) => c,
+            Err(_) => {
+                // Source contained an interior NUL — pass original through.
+                gles2::ShaderSource(shader, count, string, length);
+                return;
+            }
+        };
+        let ptr = c.as_ptr();
+        gles2::ShaderSource(shader, 1, &ptr, std::ptr::null());
     }
     unsafe fn CompileShader(&mut self, shader: GLuint) {
         gles2::CompileShader(shader)
@@ -1031,6 +1290,33 @@ impl GLES for GLES2Native<'_> {
     }
     unsafe fn GetVertexAttribfv(&mut self, index: GLuint, pname: GLenum, params: *mut GLfloat) {
         gles2::GetVertexAttribfv(index, pname, params)
+    }
+    unsafe fn GetVertexAttribPointerv(
+        &mut self,
+        index: GLuint,
+        pname: GLenum,
+        pointer: *mut *mut GLvoid,
+    ) {
+        gles2::GetVertexAttribPointerv(index, pname, pointer)
+    }
+
+    // Vertex array objects (GL_OES_vertex_array_object)
+    fn supports_vao_oes(&self) -> bool {
+        gles2::BindVertexArrayOES::is_loaded()
+            && gles2::GenVertexArraysOES::is_loaded()
+            && gles2::DeleteVertexArraysOES::is_loaded()
+    }
+    unsafe fn BindVertexArrayOES(&mut self, array: GLuint) {
+        gles2::BindVertexArrayOES(array)
+    }
+    unsafe fn GenVertexArraysOES(&mut self, n: GLsizei, arrays: *mut GLuint) {
+        gles2::GenVertexArraysOES(n, arrays)
+    }
+    unsafe fn DeleteVertexArraysOES(&mut self, n: GLsizei, arrays: *const GLuint) {
+        gles2::DeleteVertexArraysOES(n, arrays)
+    }
+    unsafe fn IsVertexArrayOES(&mut self, array: GLuint) -> GLboolean {
+        gles2::IsVertexArrayOES(array)
     }
 
     // Uniforms

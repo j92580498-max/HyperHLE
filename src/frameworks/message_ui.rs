@@ -18,10 +18,11 @@
 //! dylib …` at startup, which can spook users into reporting otherwise-
 //! fine apps as broken (e.g. HyperHLE appdb report #74, Smack It).
 //!
-//! This stub exists so the dependency is recognized and the warning is
-//! suppressed. Real MFMailComposeViewController / MFMessageComposeView-
-//! Controller handling is not implemented; specific MessageUI APIs can
-//! be added here as they come up.
+//! `MFMailComposeViewController` (+canSendMail, etc.) is implemented in
+//! [crate::frameworks::media_player::mf_mail_compose_view_controller] and
+//! exported via the MediaPlayer framework dylib list. This module exists
+//! only so the MessageUI Mach-O path is recognized and the warning is
+//! suppressed.
 
 use crate::dyld::FunctionExports;
 

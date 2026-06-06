@@ -53,18 +53,32 @@ fn translate_glsl_es_with_version(source: &str, version_directive: &'static str)
     let mut out = String::with_capacity(source.len() + 32);
     let mut emitted_version = false;
 
+    // Collect #extension directives to hoist them right after #version.
+    // Desktop GLSL requires #extension before any non-preprocessor tokens.
+    let mut extension_lines: Vec<String> = Vec::new();
+    let mut body_lines: Vec<String> = Vec::new();
+
     for raw_line in source.lines() {
         let trimmed = raw_line.trim_start();
 
         if !emitted_version {
             if trimmed.starts_with("#version") {
-                out.push_str(version_directive);
                 emitted_version = true;
-                continue;
-            } else if !trimmed.is_empty() && !trimmed.starts_with("//") {
-                out.push_str(version_directive);
+                continue; // We'll emit our own version directive
+            } else if !trimmed.is_empty() && !trimmed.starts_with("//") && !trimmed.starts_with('#') {
                 emitted_version = true;
             }
+        }
+
+        // Collect #extension directives separately so we can hoist them.
+        if trimmed.starts_with("#extension") {
+            // Strip GL_EXT_shader_texture_lod extension — desktop GLSL 1.20/3.30
+            // doesn't have this extension (texture2DLod is built-in in 1.30+).
+            if trimmed.contains("GL_EXT_shader_texture_lod") {
+                continue;
+            }
+            extension_lines.push(raw_line.to_string());
+            continue;
         }
 
         // Drop standalone "precision <qual> <type>;" lines.
@@ -77,16 +91,55 @@ fn translate_glsl_es_with_version(source: &str, version_directive: &'static str)
         }
 
         let stripped = strip_precision_qualifiers(raw_line);
-        out.push_str(&stripped);
+        body_lines.push(stripped);
+    }
+
+    // Emit version directive first.
+    out.push_str(version_directive);
+
+    // Emit hoisted #extension lines right after version.
+    for ext in &extension_lines {
+        out.push_str(ext);
         out.push('\n');
     }
 
-    if !emitted_version {
-        let mut prepended = String::from(version_directive);
-        prepended.push_str(&out);
-        return prepended;
+    // Emit body.
+    for line in &body_lines {
+        out.push_str(line);
+        out.push('\n');
     }
+
+    // Replace texture*LodEXT calls with their desktop equivalents.
+    // In GLSL 1.20 we have texture2DLod as a built-in (from GL_ARB_shader_texture_lod
+    // which is required by GL 2.1). In GLSL 3.30 we have textureLod.
+    if version_directive.contains("120") {
+        out = replace_texture_lod_ext_desktop_120(&out);
+    } else if version_directive.contains("330") {
+        out = replace_texture_lod_ext_desktop_330(&out);
+    }
+
     out
+}
+
+/// In desktop GLSL 1.20, `texture2DLod` is available as a built-in (via
+/// GL_ARB_shader_texture_lod which is part of OpenGL 2.1 core). Replace the
+/// EXT-suffixed names with the unsuffixed equivalents.
+fn replace_texture_lod_ext_desktop_120(source: &str) -> String {
+    source
+        .replace("texture2DLodEXT", "texture2DLod")
+        .replace("texture2DProjLodEXT", "texture2DProjLod")
+        .replace("textureCubeLodEXT", "textureCubeLod")
+        .replace("texture2DGradEXT", "texture2DGrad")
+}
+
+/// In desktop GLSL 3.30, the generic `textureLod` function replaces all
+/// type-specific LOD sampling functions.
+fn replace_texture_lod_ext_desktop_330(source: &str) -> String {
+    source
+        .replace("texture2DLodEXT", "textureLod")
+        .replace("texture2DProjLodEXT", "textureProjLod")
+        .replace("textureCubeLodEXT", "textureLod")
+        .replace("texture2DGradEXT", "textureGrad")
 }
 
 /// Strip occurrences of `lowp`, `mediump`, and `highp` from a line, while
@@ -152,7 +205,7 @@ mod tests {
 
     #[test]
     fn strips_precision_lines() {
-        let src = "precision mediump float;\nprecision highp int;\nvoid main(){}\n";
+        let src = "#version 100\nprecision mediump float;\nprecision highp int;\nvoid main(){}\n";
         let out = translate_glsl_es_to_120(src);
         assert!(!out.contains("precision mediump"));
         assert!(!out.contains("precision highp"));
@@ -160,7 +213,7 @@ mod tests {
 
     #[test]
     fn strips_inline_qualifiers() {
-        let src = "varying lowp vec4 DestinationColor;\n";
+        let src = "#version 100\nvarying lowp vec4 DestinationColor;\n";
         let out = translate_glsl_es_to_120(src);
         assert!(out.contains("varying vec4 DestinationColor;"));
         assert!(!out.contains("lowp"));
@@ -168,8 +221,29 @@ mod tests {
 
     #[test]
     fn preserves_non_qualifier_identifiers() {
-        let src = "uniform float highpassCutoff;\n";
+        let src = "#version 100\nuniform float highpassCutoff;\n";
         let out = translate_glsl_es_to_120(src);
         assert!(out.contains("highpassCutoff"));
+    }
+
+    #[test]
+    fn hoists_extension_directives() {
+        let src = "#version 100\nvoid foo() {}\n#extension GL_OES_standard_derivatives : enable\nvoid main(){}\n";
+        let out = translate_glsl_es_to_120(src);
+        // Extension should come right after #version, before any code
+        let version_pos = out.find("#version 120").unwrap();
+        let ext_pos = out.find("#extension GL_OES_standard_derivatives").unwrap();
+        let foo_pos = out.find("void foo()").unwrap();
+        assert!(ext_pos < foo_pos);
+        assert!(ext_pos > version_pos);
+    }
+
+    #[test]
+    fn strips_texture_lod_ext_extension_and_replaces_calls() {
+        let src = "#version 100\n#extension GL_EXT_shader_texture_lod : enable\nvoid main(){ gl_FragColor = texture2DLodEXT(tex, uv, 0.0); }\n";
+        let out = translate_glsl_es_to_120(src);
+        assert!(!out.contains("GL_EXT_shader_texture_lod"));
+        assert!(!out.contains("texture2DLodEXT"));
+        assert!(out.contains("texture2DLod"));
     }
 }

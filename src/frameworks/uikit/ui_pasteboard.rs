@@ -13,6 +13,7 @@ use std::collections::HashMap;
 
 // MARK: - UIPasteboard host object
 
+#[derive(Default)]
 struct UIPasteboardHostObject {
     /// Имя буфера обмена (NSString*)
     name: id,

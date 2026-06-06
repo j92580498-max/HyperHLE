@@ -102,6 +102,13 @@ enum StringHostObject {
     Utf8(Cow<'static, str>),
     Utf16(Utf16String),
 }
+impl Default for StringHostObject {
+    // Phantom-fallback value; an empty borrowed UTF-8 string is the natural
+    // "no content" form and doesn't allocate.
+    fn default() -> Self {
+        StringHostObject::Utf8(Cow::Borrowed(""))
+    }
+}
 impl HostObject for StringHostObject {}
 impl StringHostObject {
     fn decode(bytes: Cow<[u8]>, encoding: NSStringEncoding) -> StringHostObject {
@@ -1534,6 +1541,187 @@ pub const CLASSES: ClassExports = objc_classes! {
     }
     let res = from_rust_string(env, out);
     autorelease(env, res)
+}
+
+// MARK: - Property list parsing
+
+- (id)propertyListFromStringsFileFormat {
+    // Parses the .strings file format: "key" = "value"; pairs separated by
+    // newlines, with optional C-style /* ... */ comments.
+    // Returns an NSDictionary with string keys and string values.
+    let src = to_rust_string(env, this);
+    let dict: id = msg_class![env; NSMutableDictionary dictionary];
+
+    let chars: Vec<char> = src.chars().collect();
+    let len = chars.len();
+    let mut i = 0;
+
+    while i < len {
+        // Skip whitespace and newlines
+        if chars[i].is_ascii_whitespace() {
+            i += 1;
+            continue;
+        }
+
+        // Skip C-style comments /* ... */
+        if i + 1 < len && chars[i] == '/' && chars[i + 1] == '*' {
+            i += 2;
+            while i + 1 < len && !(chars[i] == '*' && chars[i + 1] == '/') {
+                i += 1;
+            }
+            if i + 1 < len {
+                i += 2; // skip */
+            }
+            continue;
+        }
+
+        // Skip single-line comments //
+        if i + 1 < len && chars[i] == '/' && chars[i + 1] == '/' {
+            i += 2;
+            while i < len && chars[i] != '\n' {
+                i += 1;
+            }
+            continue;
+        }
+
+        // Parse a key — either a quoted string or an unquoted token
+        let key = if chars[i] == '"' {
+            i += 1; // skip opening quote
+            let mut s = String::new();
+            while i < len && chars[i] != '"' {
+                if chars[i] == '\\' && i + 1 < len {
+                    i += 1;
+                    match chars[i] {
+                        'n' => s.push('\n'),
+                        't' => s.push('\t'),
+                        'r' => s.push('\r'),
+                        '\\' => s.push('\\'),
+                        '"' => s.push('"'),
+                        'U' | 'u' => {
+                            // \Uxxxx unicode escape
+                            i += 1;
+                            let mut hex = String::new();
+                            while i < len && hex.len() < 4 && chars[i].is_ascii_hexdigit() {
+                                hex.push(chars[i]);
+                                i += 1;
+                            }
+                            if let Ok(code) = u32::from_str_radix(&hex, 16) {
+                                if let Some(c) = char::from_u32(code) {
+                                    s.push(c);
+                                }
+                            }
+                            continue; // i already advanced past hex digits
+                        }
+                        other => {
+                            s.push('\\');
+                            s.push(other);
+                        }
+                    }
+                } else {
+                    s.push(chars[i]);
+                }
+                i += 1;
+            }
+            if i < len { i += 1; } // skip closing quote
+            s
+        } else {
+            // Unquoted key — read until = or whitespace
+            let mut s = String::new();
+            while i < len && chars[i] != '=' && !chars[i].is_ascii_whitespace() && chars[i] != ';' {
+                s.push(chars[i]);
+                i += 1;
+            }
+            s
+        };
+
+        if key.is_empty() {
+            i += 1;
+            continue;
+        }
+
+        // Skip whitespace
+        while i < len && chars[i].is_ascii_whitespace() {
+            i += 1;
+        }
+
+        // Expect '='
+        if i < len && chars[i] == '=' {
+            i += 1;
+        } else {
+            // Malformed — skip to next semicolon or newline
+            while i < len && chars[i] != ';' && chars[i] != '\n' {
+                i += 1;
+            }
+            if i < len { i += 1; }
+            continue;
+        }
+
+        // Skip whitespace
+        while i < len && chars[i].is_ascii_whitespace() {
+            i += 1;
+        }
+
+        // Parse the value — either quoted or unquoted
+        let value = if i < len && chars[i] == '"' {
+            i += 1; // skip opening quote
+            let mut s = String::new();
+            while i < len && chars[i] != '"' {
+                if chars[i] == '\\' && i + 1 < len {
+                    i += 1;
+                    match chars[i] {
+                        'n' => s.push('\n'),
+                        't' => s.push('\t'),
+                        'r' => s.push('\r'),
+                        '\\' => s.push('\\'),
+                        '"' => s.push('"'),
+                        'U' | 'u' => {
+                            i += 1;
+                            let mut hex = String::new();
+                            while i < len && hex.len() < 4 && chars[i].is_ascii_hexdigit() {
+                                hex.push(chars[i]);
+                                i += 1;
+                            }
+                            if let Ok(code) = u32::from_str_radix(&hex, 16) {
+                                if let Some(c) = char::from_u32(code) {
+                                    s.push(c);
+                                }
+                            }
+                            continue;
+                        }
+                        other => {
+                            s.push('\\');
+                            s.push(other);
+                        }
+                    }
+                } else {
+                    s.push(chars[i]);
+                }
+                i += 1;
+            }
+            if i < len { i += 1; } // skip closing quote
+            s
+        } else {
+            // Unquoted value — read until ; or newline
+            let mut s = String::new();
+            while i < len && chars[i] != ';' && chars[i] != '\n' {
+                s.push(chars[i]);
+                i += 1;
+            }
+            s.trim_end().to_string()
+        };
+
+        // Skip whitespace and semicolon
+        while i < len && (chars[i].is_ascii_whitespace() || chars[i] == ';') {
+            i += 1;
+        }
+
+        // Insert key-value pair into dictionary
+        let key_ns = from_rust_string(env, key);
+        let val_ns = from_rust_string(env, value);
+        let _: () = msg![env; dict setObject:val_ns forKey:key_ns];
+    }
+
+    dict
 }
 
 @end

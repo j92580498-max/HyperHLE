@@ -63,6 +63,7 @@ pub use properties::todo_objc_setter;
 pub use selectors::{selector, SEL};
 
 use crate::objc::classes::___objc_personality_v0;
+use crate::objc::classes::{objc_msgForward, objc_msgForward_stret};
 use crate::Environment;
 use classes::{ClassHostObject, FakeClass, UnimplementedClass};
 use messages::{
@@ -329,22 +330,6 @@ const CONSTANTS: ConstantExports = &[
     // correct address (i.e. the object base).
     ("_OBJC_IVAR_$_NSObject.isa", HostConstant::NullPtr),
     ("_kCFTypeArrayCallBacks", HostConstant::NullPtr),
-    (
-        "_NSHTTPCookieDomain",
-        HostConstant::NSString("NSHTTPCookieDomain"),
-    ),
-    (
-        "_NSHTTPCookieValue",
-        HostConstant::NSString("NSHTTPCookieValue"),
-    ),
-    (
-        "_NSHTTPCookieName",
-        HostConstant::NSString("NSHTTPCookieName"),
-    ),
-    (
-        "_NSHTTPCookiePath",
-        HostConstant::NSString("NSHTTPCookiePath"),
-    ),
     ("_NSKeyValueChangeNewKey", HostConstant::NSString("new")),
 ];
 
@@ -402,6 +387,8 @@ const FUNCTIONS: FunctionExports = &[
     export_c_func!(class_getMethodImplementation_stret(_, _)),
     export_c_func!(objc_storeStrong(_, _)),
     export_c_func!(___objc_personality_v0(_, _, _, _, _)),
+    export_c_func_aliased!("_objc_msgForward", objc_msgForward(_, _)),
+    export_c_func_aliased!("_objc_msgForward_stret", objc_msgForward_stret(_, _, _)),
     // Additional ObjC runtime helpers needed by iOS 5/6 binaries.
     export_c_func!(class_getName(_)),
     export_c_func!(objc_lookUpClass(_)),

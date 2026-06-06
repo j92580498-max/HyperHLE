@@ -34,6 +34,7 @@ impl State {
     }
 }
 
+#[derive(Default)]
 struct NSThreadHostObject {
     target: id,
     selector: Option<SEL>,

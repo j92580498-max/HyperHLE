@@ -34,6 +34,7 @@ const UIEventSubtypeRemoteControlEndSeekingBackward: UIEventSubtype = 107;
 const UIEventSubtypeRemoteControlBeginSeekingForward: UIEventSubtype = 108;
 const UIEventSubtypeRemoteControlEndSeekingForward: UIEventSubtype = 109;
 
+#[derive(Default)]
 pub(super) struct UIEventHostObject {
     /// `NSSet<UITouch*>*`
     touches: id,

@@ -34,6 +34,7 @@ const NSCalculationDivideByZero: NSCalculationError = 4;
 
 /// We store the value as an `f64` for simplicity.  Full BCD decimal storage
 /// is not needed for the game use-cases touchHLE targets.
+#[derive(Default)]
 struct NSDecimalNumberHostObject {
     value: f64,
 }
@@ -41,6 +42,7 @@ impl HostObject for NSDecimalNumberHostObject {}
 
 // MARK: - NSDecimalNumberHandler host object
 
+#[derive(Default)]
 struct NSDecimalNumberHandlerHostObject {
     rounding_mode: NSRoundingMode,
     scale: i16,

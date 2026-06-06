@@ -87,9 +87,98 @@ fn CTFontManagerRegisterGraphicsFont(
     true
 }
 
+/// Opaque paragraph style reference.
+/// On real iOS this is a CFType; we represent it as an opaque ObjC id allocated
+/// via the runtime so it can participate in retain/release.
+pub type CTParagraphStyleRef = crate::objc::id;
+
+/// `CTParagraphStyleRef CTParagraphStyleCreate(
+///     const CTParagraphStyleSetting *settings,
+///     size_t settingCount)`
+///
+/// Creates an immutable paragraph style object from an array of
+/// `CTParagraphStyleSetting` structures. Each setting specifies a paragraph
+/// property (alignment, line spacing, indents, etc.).
+///
+/// touchHLE does not perform CoreText layout, so the returned object is an
+/// opaque token that apps can store in attributed-string dictionaries and
+/// pass to CTFramesetter without crashing. The individual settings are
+/// intentionally ignored — visual paragraph formatting is not reproduced —
+/// but returning a valid non-NULL object is critical for apps that assert
+/// on the return value or use it as a dictionary key.
+///
+/// Reference: <https://developer.apple.com/documentation/coretext/1524171-ctparagraphstylecreate>
+fn CTParagraphStyleCreate(
+    env: &mut Environment,
+    _settings: ConstVoidPtr, // const CTParagraphStyleSetting*
+    _setting_count: u32,     // size_t (32-bit guest)
+) -> CTParagraphStyleRef {
+    // Allocate a minimal NSObject-based token. The object has no meaningful
+    // internal state — it just needs to survive retain/release cycles and
+    // respond to `isEqual:` / `hash` (NSObject defaults are fine for identity
+    // semantics).
+    let obj: CTParagraphStyleRef = crate::objc::msg_class![env; NSObject new];
+    log_dbg!(
+        "CTParagraphStyleCreate(settings={:?}, count={}) => {:?}",
+        _settings,
+        _setting_count,
+        obj
+    );
+    // Return ownership to the caller (balanced by CFRelease or autorelease
+    // pool drain on the guest side).
+    obj
+}
+
+/// `CTParagraphStyleRef CTParagraphStyleCreateCopy(CTParagraphStyleRef paragraphStyle)`
+///
+/// Returns a copy of the paragraph style. Since our implementation carries no
+/// mutable state, we simply retain and return the same object.
+///
+/// Reference: <https://developer.apple.com/documentation/coretext/1525098-ctparagraphstylecreatecopy>
+fn CTParagraphStyleCreateCopy(
+    env: &mut Environment,
+    paragraph_style: CTParagraphStyleRef,
+) -> CTParagraphStyleRef {
+    if paragraph_style.is_null() {
+        return crate::objc::nil;
+    }
+    crate::objc::retain(env, paragraph_style);
+    paragraph_style
+}
+
+/// `bool CTParagraphStyleGetValueForSpecifier(
+///     CTParagraphStyleRef paragraphStyle,
+///     CTParagraphStyleSpecifier spec,
+///     size_t valueBufferSize,
+///     void *valueBuffer)`
+///
+/// Retrieves the value of a specific paragraph-style property. Since we don't
+/// store settings, we zero-fill the output buffer and return false (indicating
+/// the default value is being returned).
+///
+/// Reference: <https://developer.apple.com/documentation/coretext/1525353-ctparagraphstylegetvalueforspeci>
+fn CTParagraphStyleGetValueForSpecifier(
+    env: &mut Environment,
+    _paragraph_style: CTParagraphStyleRef,
+    _spec: u32,              // CTParagraphStyleSpecifier
+    value_buffer_size: u32,  // size_t
+    value_buffer: MutPtr<u8>,
+) -> bool {
+    // Zero-fill the buffer — this provides the documented "default" values
+    // (alignment = natural, line break mode = word wrapping, indents = 0, etc.)
+    if !value_buffer.is_null() && value_buffer_size > 0 {
+        let slice = env.mem.bytes_at_mut(value_buffer, value_buffer_size);
+        slice.fill(0);
+    }
+    false // "specifier not found" — caller uses default
+}
+
 pub const FUNCTIONS: FunctionExports = &[
     export_c_func!(CTFontCreateWithGraphicsFont(_, _, _, _)),
     export_c_func!(CTFontManagerRegisterGraphicsFont(_, _)),
+    export_c_func!(CTParagraphStyleCreate(_, _)),
+    export_c_func!(CTParagraphStyleCreateCopy(_)),
+    export_c_func!(CTParagraphStyleGetValueForSpecifier(_, _, _, _)),
 ];
 
 pub const CONSTANTS: ConstantExports = &[

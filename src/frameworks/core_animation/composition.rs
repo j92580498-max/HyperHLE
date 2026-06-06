@@ -64,6 +64,13 @@ unsafe fn load_matrix(gles: &mut dyn GLES, matrix: Matrix<4>) {
 ///
 /// Returns the time a recomposite is due, if any.
 pub fn recomposite_if_necessary(env: &mut Environment, force: bool) -> Option<Instant> {
+    // Compositing requires a window/render target. In headless mode there is
+    // none, so there is nothing to composite; skip rather than touching the
+    // absent window further down.
+    if env.window.is_none() {
+        return None;
+    }
+
     let mut animation_state = animation::State::default();
     let windows = env.framework_state.uikit.ui_view.ui_window.windows.clone();
     if !windows.iter().any(|&window| !msg![env; window isHidden]) {

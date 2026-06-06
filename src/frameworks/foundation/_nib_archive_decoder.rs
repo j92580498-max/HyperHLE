@@ -23,8 +23,13 @@ use crate::objc::{
 };
 use nibarchive::{NIBArchive, Value, ValueVariant};
 
+#[derive(Default)]
 struct NIBArchiveDecoderHostObject {
-    archive: NIBArchive,
+    /// `None` only for the phantom-default returned via `Default::default()`
+    /// when the objc runtime needs a placeholder for a missing/wrong-typed
+    /// host object. Real archives are always loaded via
+    /// `_touchHLE_initForReadingWithData:`.
+    archive: Option<NIBArchive>,
     current_object_idx: Option<u32>,
     /// linear map of idx => id
     already_unarchived: Vec<Option<id>>,
@@ -95,9 +100,9 @@ pub const CLASSES: ClassExports = objc_classes! {
 
 + (id)allocWithZone:(NSZonePtr)_zone { // struct _NSZone*
     let unarchiver = Box::new(NIBArchiveDecoderHostObject {
-        archive: NIBArchive::new_unchecked(
+        archive: Some(NIBArchive::new_unchecked(
             Default::default(), Default::default(), Default::default(), Default::default()
-        ),
+        )),
         current_object_idx: None,
         already_unarchived: Vec::new(),
         delegate: nil,
@@ -148,7 +153,7 @@ pub const CLASSES: ClassExports = objc_classes! {
     let objects_count = archive.objects().len();
 
     host_obj.already_unarchived = vec![None; objects_count];
-    host_obj.archive = archive;
+    host_obj.archive = Some(archive);
     // we start from the 'top'
     host_obj.current_object_idx = Some(0);
     this
@@ -387,10 +392,10 @@ fn get_value_to_decode_for_key(env: &mut Environment, unarchiver: id, key: id) -
     // be `Some` whenever a guest calls a decode method. Be defensive against
     // a malformed archive that somehow leaves it cleared.
     let current_idx = host_obj.current_object_idx?;
-    let obj = host_obj.archive.objects().get(current_idx as usize)?;
-    obj.values(host_obj.archive.values())
+    let obj = host_obj.archive.as_ref().unwrap().objects().get(current_idx as usize)?;
+    obj.values(host_obj.archive.as_ref().unwrap().values())
         .iter()
-        .find(|&val| val.key(host_obj.archive.keys()) == &key)
+        .find(|&val| val.key(host_obj.archive.as_ref().unwrap().keys()) == &key)
         .map(|v| v as _)
 }
 
@@ -412,7 +417,7 @@ fn unarchive_obj(env: &mut Environment, unarchiver: id, idx: u32) -> id {
         return existing;
     }
 
-    let Some(object) = host_obj.archive.objects().get(idx_usize) else {
+    let Some(object) = host_obj.archive.as_ref().unwrap().objects().get(idx_usize) else {
         log!(
             "Warning: NIB archive has fewer objects than indices indicate at \
              idx {}; returning nil.",
@@ -445,10 +450,10 @@ fn unarchive_obj(env: &mut Environment, unarchiver: id, idx: u32) -> id {
     // First snapshot the primary + fallback names out of the archive so we
     // can drop the `host_obj` borrow before calling into `env.objc`.
     let (primary_class_name, fallback_class_names): (String, Vec<String>) = {
-        let class_name_entry = object.class_name(host_obj.archive.class_names());
+        let class_name_entry = object.class_name(host_obj.archive.as_ref().unwrap().class_names());
         let primary = class_name_entry.name().to_string();
         let fallbacks: Vec<String> = class_name_entry
-            .fallback_classes(host_obj.archive.class_names())
+            .fallback_classes(host_obj.archive.as_ref().unwrap().class_names())
             .iter()
             .map(|c| c.name().to_string())
             .collect();
@@ -482,6 +487,7 @@ fn unarchive_obj(env: &mut Environment, unarchiver: id, idx: u32) -> id {
         fallback_class_names,
         chosen_class_name
     );
+    if chosen_class_name.is_empty() { eprintln!("DIAG_CALLER: nib_archive_decoder chosen_class empty (primary {:?}, fallbacks {:?})", primary_class_name, fallback_class_names); }
     let class = env.objc.get_known_class(&chosen_class_name, &mut env.mem);
 
     let host_obj = borrow_host_obj(env, unarchiver);
@@ -508,7 +514,7 @@ pub fn decode_current_array(env: &mut Environment, unarchiver: id) -> Vec<id> {
 
     let mut indicies = vec![];
 
-    let Some(object) = host_obj.archive.objects().get(current_idx as usize) else {
+    let Some(object) = host_obj.archive.as_ref().unwrap().objects().get(current_idx as usize) else {
         log!(
             "Warning: decode_current_array: current_object_idx {} is out of \
              range; returning empty array.",
@@ -516,9 +522,9 @@ pub fn decode_current_array(env: &mut Environment, unarchiver: id) -> Vec<id> {
         );
         return Vec::new();
     };
-    let values: &[Value] = object.values(host_obj.archive.values());
+    let values: &[Value] = object.values(host_obj.archive.as_ref().unwrap().values());
     for (i, value) in values.iter().enumerate() {
-        let key = value.key(host_obj.archive.keys());
+        let key = value.key(host_obj.archive.as_ref().unwrap().keys());
         let inner_value = value.value();
         if i == 0 {
             if key != "NSInlinedValue" {
@@ -597,7 +603,7 @@ pub fn decode_current_string(env: &mut Environment, unarchiver: id) -> id {
         return from_rust_string(env, String::new());
     };
 
-    let Some(object) = host_obj.archive.objects().get(current_idx as usize) else {
+    let Some(object) = host_obj.archive.as_ref().unwrap().objects().get(current_idx as usize) else {
         log!(
             "Warning: decode_current_string: current_object_idx {} is out of \
              range; returning empty string.",
@@ -605,13 +611,13 @@ pub fn decode_current_string(env: &mut Environment, unarchiver: id) -> id {
         );
         return from_rust_string(env, String::new());
     };
-    let values: &[Value] = object.values(host_obj.archive.values());
+    let values: &[Value] = object.values(host_obj.archive.as_ref().unwrap().values());
 
     // Find the NS.bytes entry; some NSStrings also include NS.cstring or
     // NS.string variants. Fall back to empty string on anything unexpected.
     let mut bytes_value: Option<&Value> = None;
     for v in values {
-        if v.key(host_obj.archive.keys()) == "NS.bytes" {
+        if v.key(host_obj.archive.as_ref().unwrap().keys()) == "NS.bytes" {
             bytes_value = Some(v);
             break;
         }
@@ -648,7 +654,7 @@ pub fn decode_current_number(env: &mut Environment, unarchiver: id) -> id {
         return msg![env; num initWithInteger:(0 as NSInteger)];
     };
 
-    let Some(object) = host_obj.archive.objects().get(current_idx as usize) else {
+    let Some(object) = host_obj.archive.as_ref().unwrap().objects().get(current_idx as usize) else {
         log!(
             "Warning: decode_current_number: current_object_idx {} is out of \
              range; returning 0.",
@@ -657,7 +663,7 @@ pub fn decode_current_number(env: &mut Environment, unarchiver: id) -> id {
         let num = msg_class![env; NSNumber alloc];
         return msg![env; num initWithInteger:(0 as NSInteger)];
     };
-    let values: &[Value] = object.values(host_obj.archive.values());
+    let values: &[Value] = object.values(host_obj.archive.as_ref().unwrap().values());
     if values.is_empty() {
         log!("Warning: decode_current_number: empty values; returning 0.");
         let num = msg_class![env; NSNumber alloc];
@@ -665,7 +671,7 @@ pub fn decode_current_number(env: &mut Environment, unarchiver: id) -> id {
     }
 
     let value = &values[0];
-    let key = value.key(host_obj.archive.keys()).clone();
+    let key = value.key(host_obj.archive.as_ref().unwrap().keys()).clone();
     match key.as_str() {
         "NS.intval" => {
             let ns_key: id = get_static_str(env, "NS.intval");

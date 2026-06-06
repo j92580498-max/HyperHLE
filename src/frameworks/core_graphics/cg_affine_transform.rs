@@ -12,7 +12,7 @@ use crate::matrix::Matrix;
 use crate::mem::SafeRead;
 use crate::Environment;
 
-#[derive(Copy, Clone, Debug, PartialEq)]
+#[derive(Copy, Clone, Debug, Default, PartialEq)]
 #[repr(C, packed)]
 /// Apple documents this as representing a 3-by-3 matrix type where the columns
 /// are `[a, c, tx]`, `[b, d, ty]`,`[0, 0, 1]`, and which can then be used to

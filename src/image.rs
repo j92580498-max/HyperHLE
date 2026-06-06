@@ -23,12 +23,16 @@ use std::ffi::{c_int, c_uchar, CStr};
 use touchHLE_pvrt_decompress_wrapper::*;
 use touchHLE_stb_image_wrapper::*;
 
+#[derive(Default)]
 pub struct Image {
     pixels: PixelStore,
     dimensions: (u32, u32),
 }
 
+#[derive(Default)]
 enum PixelStore {
+    #[default]
+    Empty,
     StbImage(*mut c_uchar),
     Vec(Vec<u8>),
 }
@@ -117,6 +121,7 @@ impl Image {
     /// alpha). Rows are in top-to-bottom order.
     pub fn pixels(&self) -> &[u8] {
         match self.pixels {
+            PixelStore::Empty => &[],
             PixelStore::Vec(ref vec) => vec,
             PixelStore::StbImage(ptr) => unsafe {
                 std::slice::from_raw_parts(
@@ -129,6 +134,7 @@ impl Image {
 
     fn pixels_mut(&mut self) -> &mut [u8] {
         match self.pixels {
+            PixelStore::Empty => &mut [],
             PixelStore::Vec(ref mut vec) => vec,
             PixelStore::StbImage(ptr) => unsafe {
                 std::slice::from_raw_parts_mut(
@@ -294,7 +300,7 @@ impl Drop for Image {
     fn drop(&mut self) {
         match self.pixels {
             PixelStore::StbImage(ptr) => unsafe { stbi_image_free(ptr.cast()) },
-            PixelStore::Vec(_) => (),
+            PixelStore::Vec(_) | PixelStore::Empty => (),
         }
     }
 }

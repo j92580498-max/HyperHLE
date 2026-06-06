@@ -10,6 +10,7 @@ use crate::objc::{id, nil, objc_classes, release, retain, ClassExports, HostObje
 
 // MARK: - UITabBarItem host object
 
+#[derive(Default)]
 struct UITabBarItemHostObject {
     title: id,          // NSString* — retained
     image: id,          // UIImage* — retained

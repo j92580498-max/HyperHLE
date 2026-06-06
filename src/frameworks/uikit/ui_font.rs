@@ -22,6 +22,8 @@ pub(super) struct State {
     fonts: HashMap<FontKind, Font>,
     sans_regular_ja: Option<Font>,
     sans_bold_ja: Option<Font>,
+    sans_regular_ar: Option<Font>,
+    sans_bold_ar: Option<Font>,
 }
 impl State {
     fn get_font_by_kind(&mut self, font_kind: FontKind) -> &Font {
@@ -44,8 +46,9 @@ impl State {
     }
 }
 
-#[derive(Copy, Clone, PartialEq, Eq, Hash)]
+#[derive(Copy, Clone, Default, PartialEq, Eq, Hash)]
 enum FontKind {
+    #[default]
     MonoRegular,
     MonoBold,
     MonoBoldItalic,
@@ -60,6 +63,7 @@ enum FontKind {
     SerifItalic,
 }
 
+#[derive(Default)]
 struct UIFontHostObject {
     size: CGFloat,
     kind: FontKind,
@@ -428,29 +432,60 @@ fn convert_line_break_mode(ui_mode: UILineBreakMode) -> WrapMode {
     }
 }
 
+/// Returns `true` if the codepoint belongs to one of the CJK (Chinese,
+/// Japanese, Korean) Unicode blocks that the bundled Latin/serif fonts can't
+/// render and which require the Noto Sans CJK fallback.
+fn is_cjk_char(c: u32) -> bool {
+    (0x3000..=0x30FF).contains(&c) || (0xFF00..=0xFFEF).contains(&c) ||
+    (0x4e00..=0x9FA0).contains(&c) || (0x3400..=0x4DBF).contains(&c)
+}
+
+/// Returns `true` if the codepoint belongs to one of the Arabic Unicode blocks.
+/// The Latin/serif/CJK fonts have no Arabic glyphs, so such text needs the
+/// Noto Sans Arabic fallback.
+fn is_arabic_char(c: u32) -> bool {
+    (0x0600..=0x06FF).contains(&c) || // Arabic
+    (0x0750..=0x077F).contains(&c) || // Arabic Supplement
+    (0x08A0..=0x08FF).contains(&c) || // Arabic Extended-A
+    (0xFB50..=0xFDFF).contains(&c) || // Arabic Presentation Forms-A
+    (0xFE70..=0xFEFF).contains(&c)    // Arabic Presentation Forms-B
+}
+
 #[rustfmt::skip]
 fn get_font<'a>(state: &'a mut State, kind: FontKind, text: &str) -> &'a Font {
+    let mut needs_cjk = false;
+    let mut needs_arabic = false;
     for c in text.chars() {
         let c = c as u32;
-        if (0x3000..=0x30FF).contains(&c) || (0xFF00..=0xFFEF).contains(&c) ||
-           (0x4e00..=0x9FA0).contains(&c) || (0x3400..=0x4DBF).contains(&c) {
-            match kind {
-                FontKind::MonoRegular |
-                FontKind::MonoItalic | FontKind::SansRegular | FontKind::SansItalic | FontKind::SerifRegular | FontKind::SerifItalic => {
-                    if state.sans_regular_ja.is_none() {
-                        state.sans_regular_ja = Some(Font::sans_regular_ja());
-                    }
-                    return state.sans_regular_ja.as_ref().unwrap();
-                },
-                FontKind::MonoBold | FontKind::MonoBoldItalic |
-                FontKind::SansBold | FontKind::SansBoldItalic | FontKind::SerifBold | FontKind::SerifBoldItalic => {
-                    if state.sans_bold_ja.is_none() {
-                        state.sans_bold_ja = Some(Font::sans_bold_ja());
-                    }
-                    return state.sans_bold_ja.as_ref().unwrap();
-                },
-            }
+        if is_cjk_char(c) {
+            needs_cjk = true;
+        } else if is_arabic_char(c) {
+            needs_arabic = true;
         }
+    }
+
+    // CJK takes priority over Arabic when both are present, matching the order
+    // in which fallbacks were historically added; the common case is text
+    // containing only one of the two scripts.
+    let is_bold = matches!(
+        kind,
+        FontKind::MonoBold | FontKind::MonoBoldItalic |
+        FontKind::SansBold | FontKind::SansBoldItalic |
+        FontKind::SerifBold | FontKind::SerifBoldItalic
+    );
+
+    if needs_cjk {
+        if is_bold {
+            return state.sans_bold_ja.get_or_insert_with(Font::sans_bold_ja);
+        }
+        return state.sans_regular_ja.get_or_insert_with(Font::sans_regular_ja);
+    }
+
+    if needs_arabic {
+        if is_bold {
+            return state.sans_bold_ar.get_or_insert_with(Font::sans_bold_ar);
+        }
+        return state.sans_regular_ar.get_or_insert_with(Font::sans_regular_ar);
     }
 
     state.get_font_by_kind(kind)

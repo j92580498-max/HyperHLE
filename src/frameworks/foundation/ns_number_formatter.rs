@@ -25,6 +25,7 @@ const NS_NUMBER_FORMATTER_BEHAVIOR_10_4: NSUInteger = 1040;
 static DEFAULT_FORMATTER_BEHAVIOR: std::sync::atomic::AtomicU32 =
     std::sync::atomic::AtomicU32::new(NS_NUMBER_FORMATTER_BEHAVIOR_10_4);
 
+#[derive(Default)]
 struct NSNumberFormatterHostObject {
     number_style: NSUInteger,
     locale: id,

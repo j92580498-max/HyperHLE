@@ -17,6 +17,7 @@ use crate::frameworks::core_graphics::CGFloat;
 use crate::objc::{id, objc_classes, ClassExports, HostObject, NSZonePtr};
 
 // MARK: - UIPinchGestureRecognizer host object
+#[derive(Default)]
 struct UIPinchGestureRecognizerHostObject {
     scale: CGFloat,
     velocity: CGFloat,

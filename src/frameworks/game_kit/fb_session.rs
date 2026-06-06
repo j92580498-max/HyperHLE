@@ -4,6 +4,7 @@
 
 use crate::objc::{id, msg, nil, objc_classes, ClassExports, HostObject, NSZonePtr};
 
+#[derive(Default)]
 struct FBSessionHostObject {
     delegate: id,
 }

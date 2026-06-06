@@ -16,6 +16,7 @@ use crate::objc::{
 
 // MARK: - NSPersistentStoreCoordinator
 
+#[derive(Default)]
 struct NSPersistentStoreCoordinatorHostObject {
     /// `NSManagedObjectModel*`
     managed_object_model: id,
@@ -26,6 +27,7 @@ impl HostObject for NSPersistentStoreCoordinatorHostObject {}
 
 // MARK: - NSPersistentStore
 
+#[derive(Default)]
 struct NSPersistentStoreHostObject {
     /// `NSString*`
     type_: id,
@@ -40,6 +42,7 @@ impl HostObject for NSPersistentStoreHostObject {}
 
 // MARK: - NSManagedObjectModel
 
+#[derive(Default)]
 struct NSManagedObjectModelHostObject {
     /// `NSArray<NSEntityDescription*>*`
     entities: id,
@@ -48,6 +51,7 @@ impl HostObject for NSManagedObjectModelHostObject {}
 
 // MARK: - NSManagedObjectContext
 
+#[derive(Default)]
 struct NSManagedObjectContextHostObject {
     /// `NSPersistentStoreCoordinator*`
     persistent_store_coordinator: id,
@@ -60,6 +64,7 @@ impl HostObject for NSManagedObjectContextHostObject {}
 
 // MARK: - NSManagedObject
 
+#[derive(Default)]
 struct NSManagedObjectHostObject {
     /// `NSEntityDescription*`
     entity: id,
@@ -70,6 +75,7 @@ impl HostObject for NSManagedObjectHostObject {}
 
 // MARK: - NSEntityDescription
 
+#[derive(Default)]
 struct NSEntityDescriptionHostObject {
     /// `NSString*`
     name: id,
@@ -82,6 +88,7 @@ impl HostObject for NSEntityDescriptionHostObject {}
 
 // MARK: - NSFetchRequest
 
+#[derive(Default)]
 struct NSFetchRequestHostObject {
     /// `NSEntityDescription*`
     entity: id,
@@ -98,6 +105,31 @@ struct NSFetchRequestHostObject {
     includes_subentities: bool,
 }
 impl HostObject for NSFetchRequestHostObject {}
+
+// MARK: - NSPropertyDescription
+
+#[derive(Default)]
+struct NSPropertyDescriptionHostObject {
+    /// `NSString*`
+    name: id,
+    optional: bool,
+    transient: bool,
+    /// `NSDictionary*`
+    user_info: id,
+}
+impl HostObject for NSPropertyDescriptionHostObject {}
+
+// MARK: - NSAttributeDescription
+
+#[derive(Default)]
+struct NSAttributeDescriptionHostObject {
+    /// NSAttributeType (integer enum)
+    attribute_type: NSInteger,
+    /// `id` default value
+    default_value: id,
+    allows_external_binary_data_storage: bool,
+}
+impl HostObject for NSAttributeDescriptionHostObject {}
 
 // Apple Core Data — exported `NSString * const` identifiers used as
 // store-type tags, error-domain names, store-option keys, notification
@@ -1095,6 +1127,161 @@ insertIntoManagedObjectContext:(id)context {           // NSManagedObjectContext
 
 - (NSInteger)resultType           { 0 } // NSManagedObjectResultType
 - (())setResultType:(NSInteger)_v {}
+
+@end
+
+// =========================================================================
+// NSPropertyDescription (abstract base for NSAttributeDescription,
+// NSRelationshipDescription, NSFetchedPropertyDescription)
+// =========================================================================
+
+@implementation NSPropertyDescription: NSObject
+
++ (id)allocWithZone:(NSZonePtr)_zone {
+    let host_object = Box::new(NSPropertyDescriptionHostObject {
+        name: nil,
+        optional: true,
+        transient: false,
+        user_info: nil,
+    });
+    env.objc.alloc_object(this, host_object, &mut env.mem)
+}
+
+- (())dealloc {
+    let host = env.objc.borrow::<NSPropertyDescriptionHostObject>(this);
+    let (name, user_info) = (host.name, host.user_info);
+    release(env, name);
+    release(env, user_info);
+    env.objc.dealloc_object(this, &mut env.mem)
+}
+
+- (id)name {
+    env.objc.borrow::<NSPropertyDescriptionHostObject>(this).name
+}
+
+- (())setName:(id)name {
+    let old = env.objc.borrow::<NSPropertyDescriptionHostObject>(this).name;
+    release(env, old);
+    retain(env, name);
+    env.objc.borrow_mut::<NSPropertyDescriptionHostObject>(this).name = name;
+}
+
+- (bool)isOptional {
+    env.objc.borrow::<NSPropertyDescriptionHostObject>(this).optional
+}
+
+- (())setOptional:(bool)optional {
+    env.objc.borrow_mut::<NSPropertyDescriptionHostObject>(this).optional = optional;
+}
+
+- (bool)isTransient {
+    env.objc.borrow::<NSPropertyDescriptionHostObject>(this).transient
+}
+
+- (())setTransient:(bool)transient {
+    env.objc.borrow_mut::<NSPropertyDescriptionHostObject>(this).transient = transient;
+}
+
+- (id)userInfo {
+    env.objc.borrow::<NSPropertyDescriptionHostObject>(this).user_info
+}
+
+- (())setUserInfo:(id)info {
+    let old = env.objc.borrow::<NSPropertyDescriptionHostObject>(this).user_info;
+    release(env, old);
+    retain(env, info);
+    env.objc.borrow_mut::<NSPropertyDescriptionHostObject>(this).user_info = info;
+}
+
+- (id)entity { nil }
+- (id)validationPredicates { msg_class![env; NSArray new] }
+- (id)validationWarnings { msg_class![env; NSArray new] }
+- (bool)isIndexed { false }
+- (())setIndexed:(bool)_v {}
+- (bool)isIndexedBySpotlight { false }
+- (())setIndexedBySpotlight:(bool)_v {}
+- (bool)isStoredInExternalRecord { false }
+- (())setStoredInExternalRecord:(bool)_v {}
+
+@end
+
+// =========================================================================
+// NSAttributeDescription
+// Per Apple: <https://developer.apple.com/documentation/coredata/nsattributedescription>
+// Describes a Core Data entity attribute (its type, default value, etc.).
+// =========================================================================
+
+@implementation NSAttributeDescription: NSPropertyDescription
+
++ (id)allocWithZone:(NSZonePtr)_zone {
+    let host_object = Box::new(NSAttributeDescriptionHostObject {
+        attribute_type: 0, // NSUndefinedAttributeType
+        default_value: nil,
+        allows_external_binary_data_storage: false,
+    });
+    env.objc.alloc_object(this, host_object, &mut env.mem)
+}
+
+- (())dealloc {
+    let default_value = env.objc.borrow::<NSAttributeDescriptionHostObject>(this).default_value;
+    release(env, default_value);
+    env.objc.dealloc_object(this, &mut env.mem)
+}
+
+- (NSInteger)attributeType {
+    env.objc.borrow::<NSAttributeDescriptionHostObject>(this).attribute_type
+}
+
+- (())setAttributeType:(NSInteger)attr_type {
+    env.objc.borrow_mut::<NSAttributeDescriptionHostObject>(this).attribute_type = attr_type;
+}
+
+- (id)defaultValue {
+    env.objc.borrow::<NSAttributeDescriptionHostObject>(this).default_value
+}
+
+- (())setDefaultValue:(id)value {
+    let old = env.objc.borrow::<NSAttributeDescriptionHostObject>(this).default_value;
+    release(env, old);
+    retain(env, value);
+    env.objc.borrow_mut::<NSAttributeDescriptionHostObject>(this).default_value = value;
+}
+
+- (id)attributeValueClassName { nil }
+- (())setAttributeValueClassName:(id)_name {}
+
+- (id)valueTransformerName { nil }
+- (())setValueTransformerName:(id)_name {}
+
+- (bool)allowsExternalBinaryDataStorage {
+    env.objc.borrow::<NSAttributeDescriptionHostObject>(this).allows_external_binary_data_storage
+}
+
+- (())setAllowsExternalBinaryDataStorage:(bool)value {
+    env.objc.borrow_mut::<NSAttributeDescriptionHostObject>(this).allows_external_binary_data_storage = value;
+}
+
+@end
+
+// =========================================================================
+// NSRelationshipDescription
+// =========================================================================
+
+@implementation NSRelationshipDescription: NSPropertyDescription
+
+- (id)destinationEntity { nil }
+- (())setDestinationEntity:(id)_entity {}
+- (id)inverseRelationship { nil }
+- (())setInverseRelationship:(id)_rel {}
+- (NSInteger)deleteRule { 0 } // NSNoActionDeleteRule
+- (())setDeleteRule:(NSInteger)_rule {}
+- (bool)isToMany { false }
+- (NSUInteger)maxCount { 0 }
+- (())setMaxCount:(NSUInteger)_count {}
+- (NSUInteger)minCount { 0 }
+- (())setMinCount:(NSUInteger)_count {}
+- (bool)isOrdered { false }
+- (())setOrdered:(bool)_v {}
 
 @end
 

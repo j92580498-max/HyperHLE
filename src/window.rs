@@ -1643,6 +1643,15 @@ pub fn get_battery_status() -> (i32, BatteryState) {
 }
 
 pub fn get_preferred_language_codes(env: &mut Environment) -> Vec<String> {
+    // In headless mode there is no window, and the parent-stack machinery
+    // [Environment::on_parent_stack_in_coroutine] relies on requires one. The
+    // closure below doesn't actually use the window, but routing through it
+    // would still unwrap the absent window and panic. There is no meaningful
+    // user locale to report without a session anyway, so report no preference
+    // and let the caller fall back to its default (English).
+    if env.window.is_none() {
+        return Vec::new();
+    }
     env.on_parent_stack_in_coroutine(|_, _| {
         sdl2::locale::get_preferred_locales()
             .map(|loc| loc.lang)
@@ -1651,6 +1660,10 @@ pub fn get_preferred_language_codes(env: &mut Environment) -> Vec<String> {
 }
 
 pub fn get_preferred_country_codes(env: &mut Environment) -> Vec<String> {
+    // See the note in `get_preferred_language_codes` about headless mode.
+    if env.window.is_none() {
+        return Vec::new();
+    }
     env.on_parent_stack_in_coroutine(|_, _| {
         sdl2::locale::get_preferred_locales()
             .filter_map(|loc| loc.country)

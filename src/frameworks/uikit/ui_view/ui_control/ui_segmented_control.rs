@@ -32,6 +32,7 @@ const FONT_SIZE: f32 = 13.0;
 
 // MARK: - UISegment host object
 
+#[derive(Default)]
 struct UISegmentHostObject {
     title: id,
     image: id,

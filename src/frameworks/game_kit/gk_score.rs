@@ -16,6 +16,7 @@ use std::borrow::Cow;
 type GKLeaderboardTimeScope = i32;
 type GKLeaderboardPlayerScope = i32;
 
+#[derive(Default)]
 struct GKScoreHostObject {
     category: id,
     leaderboard_identifier: id,

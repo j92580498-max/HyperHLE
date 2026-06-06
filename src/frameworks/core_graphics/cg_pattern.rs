@@ -60,6 +60,7 @@ pub struct CGPatternCallbacks {
 }
 unsafe impl SafeRead for CGPatternCallbacks {}
 
+#[derive(Default)]
 struct CGPatternHostObject {
     /// `info` pointer passed to the drawPattern/releaseInfo callbacks.
     info: u32,

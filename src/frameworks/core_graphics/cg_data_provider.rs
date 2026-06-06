@@ -52,6 +52,13 @@ enum CGDataProviderHostObject {
     CGImage(CGImageRef),
     CFData(CFDataRef),
 }
+impl Default for CGDataProviderHostObject {
+    // Phantom-fallback value; a `CFData(nil)` variant is the cheapest "no
+    // data" form and doesn't reference any guest memory.
+    fn default() -> Self {
+        CGDataProviderHostObject::CFData(nil)
+    }
+}
 impl HostObject for CGDataProviderHostObject {}
 
 pub const CLASSES: ClassExports = objc_classes! {
@@ -281,12 +288,97 @@ fn CGDataProviderGetSize(env: &mut Environment, provider: CGDataProviderRef) -> 
 }
 
 fn CGDataProviderCreateSequential(
-    _env: &mut Environment,
-    _info: MutVoidPtr,
-    _callbacks: ConstVoidPtr,
+    env: &mut Environment,
+    info: MutVoidPtr,
+    callbacks: ConstVoidPtr,
 ) -> CGDataProviderRef {
-    log!("Warning: CGDataProviderCreateSequential is not supported, returning null");
-    nil // <- was std::ptr::null()
+    // CGDataProviderSequentialCallbacks struct layout (32-bit ARM):
+    //   offset 0: version (u32)
+    //   offset 4: getBytes  — size_t (*)(void *info, void *buffer, size_t count)
+    //   offset 8: skipForward — off_t (*)(void *info, off_t count)
+    //   offset 12: rewind   — void (*)(void *info)
+    //   offset 16: releaseInfo — void (*)(void *info)
+    //
+    // Strategy: call getBytes in a loop to read the full data into a
+    // host-side Vec, then wrap it in a DataWithSize provider.  This
+    // works for the common case where the data source is finite (e.g.
+    // an image file being decoded by Core Graphics).
+
+    if callbacks.is_null() {
+        log!("Warning: CGDataProviderCreateSequential: null callbacks, returning null");
+        return nil;
+    }
+
+    let cb_base = callbacks.to_bits();
+
+    let get_bytes_addr: u32 = env.mem.read(ConstPtr::<u32>::from_bits(cb_base + 4));
+    let release_info_addr: u32 = env.mem.read(ConstPtr::<u32>::from_bits(cb_base + 16));
+
+    if get_bytes_addr == 0 {
+        log!("Warning: CGDataProviderCreateSequential: no getBytes callback, returning null");
+        return nil;
+    }
+
+    let get_bytes = GuestFunction::from_addr_with_thumb_bit(get_bytes_addr);
+
+    // Allocate a temporary guest buffer for reading chunks.
+    const CHUNK_SIZE: GuestUSize = 16384;
+    let tmp_buf: MutVoidPtr = env.mem.alloc(CHUNK_SIZE).cast();
+
+    let mut all_data: Vec<u8> = Vec::new();
+
+    loop {
+        let bytes_read: GuestUSize = get_bytes.call_from_host(env, (info, tmp_buf, CHUNK_SIZE));
+        if bytes_read == 0 {
+            break;
+        }
+        let slice = env.mem.bytes_at(tmp_buf.cast::<u8>().cast_const(), bytes_read);
+        all_data.extend_from_slice(slice);
+        if bytes_read < CHUNK_SIZE {
+            break;
+        }
+    }
+
+    // Free the temporary buffer.
+    env.mem.free(tmp_buf.cast());
+
+    // Call releaseInfo if provided.
+    if release_info_addr != 0 {
+        let release_info = GuestFunction::from_addr_with_thumb_bit(release_info_addr);
+        () = release_info.call_from_host(env, (info,));
+    }
+
+    if all_data.is_empty() {
+        log_dbg!("CGDataProviderCreateSequential: read 0 bytes from callbacks");
+    } else {
+        log_dbg!(
+            "CGDataProviderCreateSequential: read {} bytes from callbacks",
+            all_data.len()
+        );
+    }
+
+    // Copy the data into guest memory and wrap as a provider.
+    let len: GuestUSize = all_data.len().try_into().unwrap();
+    let guest_buf: MutVoidPtr = env.mem.alloc(len.max(1)).cast();
+    if len > 0 {
+        env.mem
+            .bytes_at_mut(guest_buf.cast::<u8>(), len)
+            .copy_from_slice(&all_data);
+    }
+
+    let class = env
+        .objc
+        .get_known_class("_touchHLE_CGDataProvider", &mut env.mem);
+    env.objc.alloc_object(
+        class,
+        Box::new(CGDataProviderHostObject::DataWithSize {
+            info: MutVoidPtr::null(),
+            data: guest_buf.cast_const(),
+            size: len,
+            release_callback: GuestFunction::null_ptr(),
+        }),
+        &mut env.mem,
+    )
 }
 
 fn CGDataProviderCreateDirect(

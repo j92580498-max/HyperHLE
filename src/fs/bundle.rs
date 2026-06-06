@@ -332,6 +332,7 @@ impl IpaFileRef {
 }
 
 /// Represents an opened file in an IPA bundle.
+#[derive(Clone)]
 pub struct IpaFile {
     file: Cursor<DecompressedFile>,
 }

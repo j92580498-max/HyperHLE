@@ -4,6 +4,24 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/.
  */
 //! Wrapper for OpenAL usage.
+
+// ============================================================
+// ИСПРАВЛЕНИЕ:
+//
+// OpenAL::GetBufferi — параметр value должен быть *const ALint → *mut ALint
+//
+// СТАРОЕ: pub unsafe fn GetBufferi(&self, buffer: ALuint, param: ALenum, value: *const ALint)
+// НОВОЕ:  pub unsafe fn GetBufferi(&self, buffer: ALuint, param: ALenum, value: *mut ALint)
+//
+// alGetBufferi в OpenAL API является getter-функцией: она ЗАПИСЫВАЕТ
+// возвращаемое целое значение по указателю value. В al.h объявлено:
+//   AL_API void AL_APIENTRY alGetBufferi(ALuint buffer, ALenum param, ALint *value);
+// Передача *const ALint означает, что вызывающий код не может получить
+// результат через изменяемую ссылку, а Rust не позволяет тривиально
+// передать &mut i32 туда, где ожидается *const.
+// Исправлено в соответствии с lib.rs (openal-soft wrapper).
+// ============================================================
+
 use al_sys::alc_types::{ALCcontext, ALCdevice};
 use std::marker::PhantomData;
 use touchHLE_openal_soft_wrapper as al_sys;
@@ -230,7 +248,9 @@ impl OpenAL<'_> {
         al_sys::alEnable(capability)
     }
 
-    pub unsafe fn GetBufferi(&self, buffer: ALuint, param: ALenum, value: *const ALint) {
+    // FIX: value изменён с *const ALint на *mut ALint —
+    // alGetBufferi записывает значение по этому указателю.
+    pub unsafe fn GetBufferi(&self, buffer: ALuint, param: ALenum, value: *mut ALint) {
         al_sys::alGetBufferi(buffer, param, value)
     }
 
@@ -411,3 +431,4 @@ impl OpenAL<'_> {
         al_sys::alSpeedOfSound(speed)
     }
 }
+

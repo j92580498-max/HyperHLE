@@ -208,6 +208,7 @@ pub const CONSTANTS: ConstantExports = &[
 
 // MARK: - ObjC backing classes
 
+#[derive(Default)]
 struct CFReadStreamHostObject {
     status: CFStreamStatus,
     offset: usize,
@@ -215,6 +216,7 @@ struct CFReadStreamHostObject {
 }
 impl HostObject for CFReadStreamHostObject {}
 
+#[derive(Default)]
 struct CFWriteStreamHostObject {
     status: CFStreamStatus,
     data: Vec<u8>,
@@ -383,15 +385,24 @@ fn CFStreamCreatePairWithSocketToHost(
         ns_string::to_rust_string(env, host).into_owned()
     };
     log!(
-        "CFStreamCreatePairWithSocketToHost: {}:{} — stubbed, streams set to null",
+        "CFStreamCreatePairWithSocketToHost: {}:{} — stubbed, returning dummy streams",
         host_str,
         port
     );
+    // Return valid (but non-functional) stream objects rather than NULL.
+    // Many apps do not nil-check the returned streams before calling
+    // CFReadStreamOpen / CFReadStreamSetProperty etc. Returning NULL causes
+    // the ObjC runtime to hit the phantom-object fallback path and produce
+    // "SUPER HACK! Faking borrow_mut" warnings. A stub stream that
+    // immediately reports "at end" (for reads) or "closed" (for writes)
+    // after open is a safer contract.
     if !read_stream.is_null() {
-        env.mem.write(read_stream, nil);
+        let rs = alloc_read_stream(env);
+        env.mem.write(read_stream, rs);
     }
     if !write_stream.is_null() {
-        env.mem.write(write_stream, nil);
+        let ws = alloc_write_stream(env);
+        env.mem.write(write_stream, ws);
     }
 }
 
@@ -648,16 +659,18 @@ fn CFStreamCreatePairWithSocketToCFHost(
     };
 
     log!(
-        "CFStreamCreatePairWithSocketToCFHost: host={} port={} — stubbed, streams set to null",
+        "CFStreamCreatePairWithSocketToCFHost: host={} port={} — stubbed, returning dummy streams",
         host_str,
         port
     );
 
     if !read_stream.is_null() {
-        env.mem.write(read_stream, nil);
+        let rs = alloc_read_stream(env);
+        env.mem.write(read_stream, rs);
     }
     if !write_stream.is_null() {
-        env.mem.write(write_stream, nil);
+        let ws = alloc_write_stream(env);
+        env.mem.write(write_stream, ws);
     }
 }
 

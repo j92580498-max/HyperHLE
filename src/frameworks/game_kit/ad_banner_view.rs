@@ -53,6 +53,7 @@ type ADBannerContentSizeIdentifier = id; // NSString*
 
 // MARK: - Host Objects (Moved OUTSIDE the macro)
 
+#[derive(Default)]
 struct ADBannerViewHostObject {
     delegate: id,
     ad_type: ADAdType,
@@ -63,6 +64,7 @@ struct ADBannerViewHostObject {
 }
 impl crate::objc::HostObject for ADBannerViewHostObject {}
 
+#[derive(Default)]
 struct ADInterstitialAdHostObject {
     delegate: id,
     loaded: bool,

@@ -20,8 +20,19 @@ use crate::Environment;
 
 /// Calendar unit for weekday (used by [NSCalendar components:fromDate:]).
 pub type NSCalendarUnit = NSUInteger;
-pub const NSDayCalendarUnit: NSUInteger = 1 << 4; // kCFCalendarUnitDay
+pub const NSEraCalendarUnit: NSUInteger = 1 << 1;    // kCFCalendarUnitEra
+pub const NSYearCalendarUnit: NSUInteger = 1 << 2;   // kCFCalendarUnitYear
+pub const NSMonthCalendarUnit: NSUInteger = 1 << 3;  // kCFCalendarUnitMonth
+pub const NSDayCalendarUnit: NSUInteger = 1 << 4;    // kCFCalendarUnitDay
+pub const NSHourCalendarUnit: NSUInteger = 1 << 5;   // kCFCalendarUnitHour
+pub const NSMinuteCalendarUnit: NSUInteger = 1 << 6; // kCFCalendarUnitMinute
+pub const NSSecondCalendarUnit: NSUInteger = 1 << 7; // kCFCalendarUnitSecond
+pub const NSWeekCalendarUnit: NSUInteger = 1 << 8;   // kCFCalendarUnitWeek
 pub const NSWeekdayCalendarUnit: NSUInteger = 1 << 9; // kCFCalendarUnitWeekday
+pub const NSWeekdayOrdinalCalendarUnit: NSUInteger = 1 << 10;
+pub const NSWeekOfMonthCalendarUnit: NSUInteger = 1 << 12;
+pub const NSWeekOfYearCalendarUnit: NSUInteger = 1 << 13;
+pub const NSYearForWeekOfYearCalendarUnit: NSUInteger = 1 << 14;
 
 /// TODO: Support other calendar types.
 const NSGregorianCalendar: &str = "NSGregorianCalendar";
@@ -181,6 +192,33 @@ fn gregorian_weekday_from_time_interval(time_interval: NSTimeInterval) -> NSInte
     ((2 + days_since_epoch - 1).rem_euclid(7) + 1) as NSInteger
 }
 
+/// Returns the number of days in a given month (1-based) for a given year.
+/// Handles leap years for February.
+fn days_in_month(year: i32, month: i32) -> i32 {
+    match month {
+        1 => 31,
+        2 => {
+            if (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0) {
+                29
+            } else {
+                28
+            }
+        }
+        3 => 31,
+        4 => 30,
+        5 => 31,
+        6 => 30,
+        7 => 31,
+        8 => 31,
+        9 => 30,
+        10 => 31,
+        11 => 30,
+        12 => 31,
+        _ => 30,
+    }
+}
+
+#[derive(Default)]
 struct NSCalendarHostObject {
     calendar_identifier: id,
     first_weekday: NSInteger,
@@ -215,6 +253,14 @@ pub const CLASSES: ClassExports = objc_classes! {
     }
 }
 
+// Apple's `autoupdatingCurrentCalendar` returns a calendar that tracks later
+// changes to the user's locale/calendar settings. touchHLE has no live system
+// settings to track, so behaving like `currentCalendar` is equivalent and
+// avoids returning nil (which apps querying it at launch don't expect).
++ (id)autoupdatingCurrentCalendar {
+    msg![env; this currentCalendar]
+}
+
 - (id)initWithCalendarIdentifier:(id)identifier { // NSString *
     // Only the Gregorian calendar is supported for now.
     let greg: id = get_static_str(env, NSGregorianCalendar);
@@ -246,30 +292,150 @@ pub const CLASSES: ClassExports = objc_classes! {
         return nil;
     }
 
-    // TODO: Support other calendar types. The weekday and day-of-month
-    // calculations below are only valid for the Gregorian calendar.
-    let ident = env.objc.borrow::<NSCalendarHostObject>(this).calendar_identifier;
-    // assert!(ident != nil);
-    let greg: id = get_static_str(env, NSGregorianCalendar);
-    let _is_gregorian: bool = msg![env; ident isEqualToString:greg];
-    // assert!(is_gregorian);
-
     let time_interval: NSTimeInterval = msg![env; date timeIntervalSinceReferenceDate];
     let weekday = gregorian_weekday_from_time_interval(time_interval);
     let greg_date = CFAbsoluteTimeGetGregorianDate(env, time_interval, nil);
-    let day = greg_date.day as NSInteger;
 
     let components: id = msg_class![env; NSDateComponents new];
-    // TODO: Support other NSCalendarUnit flags.
-    const SUPPORTED_UNITS: NSUInteger = NSDayCalendarUnit | NSWeekdayCalendarUnit;
-    // assert!((unit_flags & !SUPPORTED_UNITS) == 0);
     let comp = env.objc.borrow_mut::<NSDateComponentsHostObject>(components);
+
+    if (unit_flags & NSYearCalendarUnit) != 0 {
+        comp.year = greg_date.year as NSInteger;
+    }
+    if (unit_flags & NSMonthCalendarUnit) != 0 {
+        comp.month = greg_date.month as NSInteger;
+    }
     if (unit_flags & NSDayCalendarUnit) != 0 {
-        comp.day = day;
+        comp.day = greg_date.day as NSInteger;
+    }
+    if (unit_flags & NSHourCalendarUnit) != 0 {
+        comp.hour = greg_date.hours as NSInteger;
+    }
+    if (unit_flags & NSMinuteCalendarUnit) != 0 {
+        comp.minute = greg_date.minutes as NSInteger;
+    }
+    if (unit_flags & NSSecondCalendarUnit) != 0 {
+        comp.second = greg_date.seconds as NSInteger;
     }
     if (unit_flags & NSWeekdayCalendarUnit) != 0 {
         comp.weekday = weekday;
     }
+    autorelease(env, components)
+}
+
+// `- (NSDateComponents *)components:(NSCalendarUnit)unitFlags
+//                          fromDate:(NSDate *)startDate
+//                            toDate:(NSDate *)endDate
+//                           options:(NSCalendarOptions)opts;`
+//
+// Per Apple's [NSCalendar Reference](https://developer.apple.com/documentation/foundation/nscalendar/1415086-components):
+// "Returns the difference between two dates expressed as date components."
+// Returns an NSDateComponents object whose fields represent the
+// calendrical difference start→end for each requested unit.
+// The Gregorian calendar implements this by decomposing both dates
+// and subtracting; month/year differences require careful handling
+// of variable-length months.
+- (id)components:(NSCalendarUnit)unit_flags
+        fromDate:(id)start_date   // NSDate *
+          toDate:(id)end_date     // NSDate *
+         options:(NSUInteger)_opts {
+    if start_date == nil || end_date == nil {
+        return nil;
+    }
+
+    let start_ti: NSTimeInterval = msg![env; start_date timeIntervalSinceReferenceDate];
+    let end_ti: NSTimeInterval = msg![env; end_date timeIntervalSinceReferenceDate];
+
+    let start_gd = CFAbsoluteTimeGetGregorianDate(env, start_ti, nil);
+    let end_gd = CFAbsoluteTimeGetGregorianDate(env, end_ti, nil);
+
+    // Compute difference in each component (Gregorian subtraction)
+    let mut year_diff = end_gd.year - start_gd.year;
+    let mut month_diff = (end_gd.month as i32) - (start_gd.month as i32);
+    let mut day_diff = (end_gd.day as i32) - (start_gd.day as i32);
+    let mut hour_diff = (end_gd.hours as i32) - (start_gd.hours as i32);
+    let mut minute_diff = (end_gd.minutes as i32) - (start_gd.minutes as i32);
+    let mut second_diff = (end_gd.seconds as i32) - (start_gd.seconds as i32);
+
+    // Borrow/carry from higher units (like subtraction with borrowing)
+    if second_diff < 0 {
+        second_diff += 60;
+        minute_diff -= 1;
+    }
+    if minute_diff < 0 {
+        minute_diff += 60;
+        hour_diff -= 1;
+    }
+    if hour_diff < 0 {
+        hour_diff += 24;
+        day_diff -= 1;
+    }
+    if day_diff < 0 {
+        // Borrow a month: use the number of days in the start month
+        let days_in_start_month = days_in_month(start_gd.year, start_gd.month as i32);
+        day_diff += days_in_start_month;
+        month_diff -= 1;
+    }
+    if month_diff < 0 {
+        month_diff += 12;
+        year_diff -= 1;
+    }
+
+    let components: id = msg_class![env; NSDateComponents new];
+    let comp = env.objc.borrow_mut::<NSDateComponentsHostObject>(components);
+
+    if (unit_flags & NSYearCalendarUnit) != 0 {
+        comp.year = year_diff as NSInteger;
+    }
+    if (unit_flags & NSMonthCalendarUnit) != 0 {
+        comp.month = month_diff as NSInteger;
+    }
+    if (unit_flags & NSDayCalendarUnit) != 0 {
+        // If year and month units are not requested, fold everything into days
+        if (unit_flags & NSYearCalendarUnit) == 0 && (unit_flags & NSMonthCalendarUnit) == 0 {
+            let total_seconds = end_ti - start_ti;
+            comp.day = (total_seconds / 86400.0).trunc() as NSInteger;
+        } else {
+            comp.day = day_diff as NSInteger;
+        }
+    }
+    if (unit_flags & NSHourCalendarUnit) != 0 {
+        if (unit_flags & NSDayCalendarUnit) == 0
+            && (unit_flags & NSMonthCalendarUnit) == 0
+            && (unit_flags & NSYearCalendarUnit) == 0
+        {
+            let total_seconds = end_ti - start_ti;
+            comp.hour = (total_seconds / 3600.0).trunc() as NSInteger;
+        } else {
+            comp.hour = hour_diff as NSInteger;
+        }
+    }
+    if (unit_flags & NSMinuteCalendarUnit) != 0 {
+        if (unit_flags & NSHourCalendarUnit) == 0
+            && (unit_flags & NSDayCalendarUnit) == 0
+            && (unit_flags & NSMonthCalendarUnit) == 0
+            && (unit_flags & NSYearCalendarUnit) == 0
+        {
+            let total_seconds = end_ti - start_ti;
+            comp.minute = (total_seconds / 60.0).trunc() as NSInteger;
+        } else {
+            comp.minute = minute_diff as NSInteger;
+        }
+    }
+    if (unit_flags & NSSecondCalendarUnit) != 0 {
+        if (unit_flags & NSMinuteCalendarUnit) == 0
+            && (unit_flags & NSHourCalendarUnit) == 0
+            && (unit_flags & NSDayCalendarUnit) == 0
+            && (unit_flags & NSMonthCalendarUnit) == 0
+            && (unit_flags & NSYearCalendarUnit) == 0
+        {
+            let total_seconds = end_ti - start_ti;
+            comp.second = total_seconds.trunc() as NSInteger;
+        } else {
+            comp.second = second_diff as NSInteger;
+        }
+    }
+
     autorelease(env, components)
 }
 

@@ -136,6 +136,7 @@ pub fn fire_targets(env: &mut Environment, recognizer: id) {
 // MARK: - UITapGestureRecognizer host object
 // ============================================================================
 
+#[derive(Default)]
 struct UITapGestureRecognizerHostObject {
     number_of_taps_required: NSInteger,
     number_of_touches_required: NSInteger,
@@ -146,6 +147,7 @@ impl HostObject for UITapGestureRecognizerHostObject {}
 // MARK: - UIPanGestureRecognizer host object
 // ============================================================================
 
+#[derive(Default)]
 struct UIPanGestureRecognizerHostObject {
     minimum_number_of_touches: NSInteger,
     maximum_number_of_touches: NSInteger,
@@ -158,6 +160,7 @@ impl HostObject for UIPanGestureRecognizerHostObject {}
 // MARK: - UISwipeGestureRecognizer host object
 // ============================================================================
 
+#[derive(Default)]
 struct UISwipeGestureRecognizerHostObject {
     direction: UISwipeGestureRecognizerDirection,
     number_of_touches_required: NSInteger,
@@ -168,6 +171,7 @@ impl HostObject for UISwipeGestureRecognizerHostObject {}
 // MARK: - UILongPressGestureRecognizer host object
 // ============================================================================
 
+#[derive(Default)]
 struct UILongPressGestureRecognizerHostObject {
     minimum_press_duration: f64,
     allowable_movement: CGFloat,

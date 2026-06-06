@@ -17,6 +17,7 @@ use crate::objc::{id, msg, msg_class, nil, objc_classes, ClassExports, HostObjec
 // MARK: - ASIdentifierManager host object
 // =========================================================================
 
+#[derive(Default)]
 struct ASIdentifierManagerHostObject {
     /// NSUUID* — the advertising identifier. Created once and cached.
     advertising_identifier: id,

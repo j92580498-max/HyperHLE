@@ -12,7 +12,7 @@ pub mod statvfs;
 use crate::abi::DotDotDot;
 use crate::dyld::{export_c_func, FunctionExports};
 use crate::fs::{GuestFile, GuestOpenOptions, GuestPath};
-use crate::libc::errno::{set_errno, EBADF, EINTR, EINVAL, EIO, EISDIR, EOVERFLOW, ESPIPE};
+use crate::libc::errno::{set_errno, EBADF, EINTR, EINVAL, EIO, EISDIR, EMFILE, EOVERFLOW, ESPIPE};
 use crate::libc::sys::socket::close_socket;
 use crate::libc::unistd::pid_t;
 use crate::mem::{
@@ -34,6 +34,17 @@ impl State {
         self.files
             .get_mut(fd_to_file_idx(fd))
             .and_then(|file_or_none| file_or_none.as_mut())
+    }
+
+    /// Whether `fd` refers to a currently-open regular file descriptor (i.e.
+    /// not one of the std streams, and not a closed/invalid descriptor).
+    pub fn is_fd_open(&self, fd: FileDescriptor) -> bool {
+        if fd < NORMAL_FILENO_BASE {
+            return false;
+        }
+        self.files
+            .get(fd_to_file_idx(fd))
+            .is_some_and(|file_or_none| file_or_none.is_some())
     }
 }
 
@@ -914,13 +925,19 @@ fn fcntl(
         }
         F_SETFD => {
             let flags: i32 = args.start().next(env);
-            if flags & FD_CLOEXEC == FD_CLOEXEC {
-                log!(
-                    "TODO: fcntl({}, F_SETFD, FD_CLOEXEC) — CLOEXEC not \
-                     supported",
-                    fd
-                );
-            }
+            // FD_CLOEXEC (close-on-exec) is a no-op in HyperHLE because the
+            // emulator is a single guest process that never calls exec().
+            // Per Apple's `man 2 fcntl`, FD_CLOEXEC causes the descriptor to
+            // be closed when a new process image is created via exec — this
+            // is irrelevant in a single-process emulator. We store the flag
+            // value so that F_GETFD returns it correctly (apps like SQLite
+            // set FD_CLOEXEC and then verify it with F_GETFD).
+            log_dbg!(
+                "fcntl({}, F_SETFD, {:#x}) — stored (CLOEXEC is no-op in \
+                 single-process emulator)",
+                fd,
+                flags
+            );
             if let Some(file) = env.libc_state.posix_io.file_for_fd(fd) {
                 file.flags = flags;
             }
@@ -1002,18 +1019,78 @@ fn fcntl(
         }
 
         // ----------------------------------------------------------------
-        // Duplicate file descriptor (stub — GuestFile is not Clone)
+        // Duplicate file descriptor
         // ----------------------------------------------------------------
         F_DUPFD | F_DUPFD_CLOEXEC => {
             let min_fd: i32 = args.start().next(env);
-            log!(
-                "TODO: fcntl({}, {}) F_DUPFD min_fd={} — dup not supported",
-                fd,
-                cmd,
-                min_fd
+            // Per Apple `man 2 fcntl`: F_DUPFD returns a new file descriptor
+            // that is the lowest numbered available descriptor >= min_fd.
+            // F_DUPFD_CLOEXEC does the same but sets FD_CLOEXEC on the new fd.
+            // The new descriptor shares the same underlying file description
+            // (seek position, status flags) but has its own fd flags.
+            let Some(src_file) = env.libc_state.posix_io.file_for_fd(fd) else {
+                set_errno(env, EBADF);
+                return -1;
+            };
+            let cloned = match src_file.file.try_clone() {
+                Ok(f) => f,
+                Err(_e) => {
+                    log!(
+                        "fcntl({}, F_DUPFD, {}) — try_clone failed: {}",
+                        fd, min_fd, _e
+                    );
+                    set_errno(env, EMFILE);
+                    return -1;
+                }
+            };
+            let src_status_flags = src_file.status_flags;
+            let src_path = src_file.path.clone();
+            let new_flags = if cmd == F_DUPFD_CLOEXEC { FD_CLOEXEC } else { 0 };
+            let host_object = PosixFileHostObject {
+                file: cloned,
+                needs_flush: false,
+                reached_eof: false,
+                flags: new_flags,
+                status_flags: src_status_flags,
+                path: src_path,
+                locks: Vec::new(),
+                flock_state: None,
+            };
+            // Find the lowest free fd >= min_fd
+            let min_idx = if min_fd >= NORMAL_FILENO_BASE {
+                fd_to_file_idx(min_fd)
+            } else {
+                0
+            };
+            let files = &mut env.libc_state.posix_io.files;
+            let new_idx = files.iter().enumerate()
+                .skip(min_idx)
+                .find(|(_, slot)| slot.is_none())
+                .map(|(idx, _)| idx);
+            let idx = match new_idx {
+                Some(idx) => {
+                    files[idx] = Some(host_object);
+                    idx
+                }
+                None => {
+                    let idx = files.len();
+                    if idx < min_idx {
+                        // Extend with None slots up to min_idx
+                        files.resize_with(min_idx, || None);
+                        files.push(Some(host_object));
+                        min_idx
+                    } else {
+                        files.push(Some(host_object));
+                        idx
+                    }
+                }
+            };
+            let new_fd = file_idx_to_fd(idx);
+            log_dbg!(
+                "fcntl({}, {}, {}) => {} (duplicated fd)",
+                fd, cmd, min_fd, new_fd
             );
-            set_errno(env, EINVAL);
-            return -1;
+            return new_fd;
         }
 
         // ----------------------------------------------------------------
@@ -1204,9 +1281,35 @@ fn writev(
     written_bytes
 }
 
+fn truncate(env: &mut Environment, path_ptr: ConstPtr<u8>, len: off_t) -> i32 {
+    // TODO: handle errno properly
+    set_errno(env, 0);
+
+    let path_string = match env.mem.cstr_at_utf8(path_ptr) {
+        Ok(s) => s.to_owned(),
+        Err(_) => {
+            return -1; // TODO: set errno
+        }
+    };
+
+    let fd = open_direct(env, path_ptr, O_WRONLY);
+    if fd < 0 {
+        log_dbg!("truncate('{}', {}) => -1", path_string, len);
+        return -1;
+    }
+
+    let res = ftruncate(env, fd, len);
+
+    close(env, fd);
+
+    log_dbg!("truncate('{}', {}) => {}", path_string, len, res);
+    res
+}
+
 pub const FUNCTIONS: FunctionExports = &[
     export_c_func!(open(_, _, _)),
     export_c_func!(creat(_, _)),
+    export_c_func!(truncate(_, _)),
     export_c_func!(read(_, _, _)),
     export_c_func!(pread(_, _, _, _)),
     export_c_func!(write(_, _, _)),

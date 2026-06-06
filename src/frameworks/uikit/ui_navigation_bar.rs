@@ -7,9 +7,10 @@
 
 use crate::frameworks::core_graphics::{CGRect, CGSize};
 use crate::frameworks::foundation::NSInteger;
+use crate::frameworks::uikit::ui_view::UIViewHostObject;
 use crate::objc::{
-    id, msg, msg_class, msg_super, nil, objc_classes, release, retain, ClassExports, HostObject,
-    NSZonePtr,
+    id, impl_HostObject_with_superclass, msg, msg_class, msg_super, nil, objc_classes, release,
+    retain, ClassExports, HostObject, NSZonePtr,
 };
 
 type UIBarStyle = NSInteger;
@@ -18,7 +19,13 @@ const UIBarStyleBlack: UIBarStyle = 1;
 const UIBarStyleBlackOpaque: UIBarStyle = 2;
 const UIBarStyleBlackTranslucent: UIBarStyle = 3;
 
+#[derive(Default)]
 struct UINavigationBarHostObject {
+    /// Embedded `UIView` host state. `UINavigationBar` is a `UIView` subclass,
+    /// so it must carry the superclass host object; without it every `UIView`
+    /// method (frame, subviews, layout, ...) sent to a nav bar fails to borrow
+    /// and falls back to a zeroed phantom.
+    superclass: UIViewHostObject,
     /// UINavigationBarDelegate — weak reference
     delegate: id,
     bar_style: UIBarStyle,
@@ -33,10 +40,11 @@ struct UINavigationBarHostObject {
     /// UIImage* background — retained
     background_image: id,
 }
-impl HostObject for UINavigationBarHostObject {}
+impl_HostObject_with_superclass!(UINavigationBarHostObject);
 
 // MARK: - UINavigationItem
 
+#[derive(Default)]
 struct UINavigationItemHostObject {
     title: id,        // NSString* — retained
     title_view: id,   // UIView* — retained
@@ -60,6 +68,7 @@ pub const CLASSES: ClassExports = objc_classes! {
 + (id)allocWithZone:(NSZonePtr)_zone {
     let items = msg_class![env; NSMutableArray new];
     let host_object = Box::new(UINavigationBarHostObject {
+        superclass: Default::default(),
         delegate: nil,
         bar_style: UIBarStyleDefault,
         translucent: true,
@@ -74,15 +83,16 @@ pub const CLASSES: ClassExports = objc_classes! {
 }
 
 - (id)init {
-    this
+    // Run UIView's initializer so the backing layer and view state are set up.
+    msg_super![env; this init]
 }
 
-- (id)initWithFrame:(CGRect)_frame {
-    this
+- (id)initWithFrame:(CGRect)frame {
+    msg_super![env; this initWithFrame:frame]
 }
 
-- (id)initWithCoder:(id)_coder {
-    this
+- (id)initWithCoder:(id)coder {
+    msg_super![env; this initWithCoder:coder]
 }
 
 - (())dealloc {

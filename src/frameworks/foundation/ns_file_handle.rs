@@ -54,6 +54,7 @@ struct PipeEnd {
     kind: PipeEndKind,
 }
 
+#[derive(Default)]
 struct NSFileHandleHostObject {
     /// POSIX file descriptor backing the handle, or `-1` if this handle is
     /// backed by an in-process pipe (see `pipe`).
@@ -80,6 +81,15 @@ struct NSPipeHostObject {
     file_handle_for_reading: id,
     /// `NSFileHandle*` for the writing end — retained.
     file_handle_for_writing: id,
+}
+impl Default for NSPipeHostObject {
+    // Phantom-fallback value; `nil` handles match `allocWithZone:` before `-init`.
+    fn default() -> Self {
+        NSPipeHostObject {
+            file_handle_for_reading: nil,
+            file_handle_for_writing: nil,
+        }
+    }
 }
 impl HostObject for NSPipeHostObject {}
 
@@ -111,6 +121,21 @@ struct NSCacheHostObject {
     order: VecDeque<NSCacheEntry>,
     /// Sum of the `cost` of every entry currently in the cache.
     total_cost: u64,
+}
+impl Default for NSCacheHostObject {
+    // Phantom-fallback value; matches `allocWithZone:` before `-init`.
+    fn default() -> Self {
+        NSCacheHostObject {
+            dict: nil,
+            name: nil,
+            count_limit: 0,
+            total_cost_limit: 0,
+            evicts_objects_with_discarded_content: true,
+            delegate: nil,
+            order: VecDeque::new(),
+            total_cost: 0,
+        }
+    }
 }
 impl HostObject for NSCacheHostObject {}
 

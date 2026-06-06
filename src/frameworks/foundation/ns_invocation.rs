@@ -19,6 +19,7 @@ use crate::objc::{
 // MARK: - NSMethodSignature Host Object
 // =========================================================================
 
+#[derive(Default)]
 struct NSMethodSignatureHostObject {
     return_type: String,
     argument_types: Vec<String>,
@@ -32,6 +33,7 @@ impl HostObject for NSMethodSignatureHostObject {}
 // MARK: - NSInvocation Host Object
 // =========================================================================
 
+#[derive(Default)]
 struct NSInvocationHostObject {
     /// `NSMethodSignature *`
     sig: id,

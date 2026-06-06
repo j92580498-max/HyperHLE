@@ -38,6 +38,7 @@ struct Observer {
     block: id,
 }
 
+#[derive(Default)]
 struct NSNotificationCenterHostObject {
     observers: HashMap<Cow<'static, str>, Vec<Observer>>,
 }

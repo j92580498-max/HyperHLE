@@ -67,6 +67,7 @@ pub type CFHTTPMessageRef = CFTypeRef;
 /// field-names is not significant, but ordering matters for repeated fields
 /// such as `Set-Cookie`, so we use a `Vec<(name, value)>` rather than a
 /// hash map).
+#[derive(Default)]
 struct CFHTTPMessageHostObject {
     is_request: bool,
     /// e.g. "GET", "POST". Always upper-case ASCII.

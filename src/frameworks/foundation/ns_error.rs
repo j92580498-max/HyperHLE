@@ -54,6 +54,7 @@ const KEY_DEBUG_DESCRIPTION: &str = "NSDebugDescription";
 const KEY_FAILING_URL_STRING: &str = "NSErrorFailingURLStringKey";
 const KEY_FAILING_URL: &str = "NSErrorFailingURLKey";
 
+#[derive(Default)]
 struct ErrorHostObject {
     domain: NSErrorDomain,
     code: NSInteger,

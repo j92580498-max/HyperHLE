@@ -8,6 +8,7 @@
 use crate::objc::{id, nil, objc_classes, ClassExports, HostObject, NSZonePtr};
 
 // Структура для хранения состояния нашего контроллера
+#[derive(Default)]
 struct UISplitViewControllerHostObject {
     view_controllers: id,
     delegate: id,

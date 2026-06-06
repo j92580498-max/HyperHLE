@@ -70,6 +70,7 @@ pub struct CFRunLoopSourceContext {
 }
 unsafe impl SafeRead for CFRunLoopSourceContext {}
 
+#[derive(Default)]
 pub struct CFRunLoopSourceHostObject {
     pub version: CFIndex,
     pub info: MutVoidPtr,
@@ -120,9 +121,17 @@ pub const CONSTANTS: ConstantExports = &[
 // MARK: - Helpers
 
 fn is_known_mode(env: &mut Environment, mode: CFRunLoopMode) -> bool {
-    let default_mode = ns_string::get_static_str(env, kCFRunLoopDefaultMode);
-    let common_modes = ns_string::get_static_str(env, kCFRunLoopCommonModes);
-    msg![env; mode isEqualToString:default_mode] || msg![env; mode isEqualToString:common_modes]
+    // Accept ALL non-nil modes. iOS apps frequently use custom run loop modes
+    // (UITrackingRunLoopMode, GSEventReceiveRunLoopMode, etc.) which are all
+    // valid. Since our run loop implementation doesn't actually partition
+    // sources/timers by mode, every mode is effectively equivalent to the
+    // default mode — but rejecting unknown modes caused Astro Shark and other
+    // Unity-based games to spin-loop with "unknown mode, skipping" flooding
+    // the log.
+    if mode.is_null() {
+        return false;
+    }
+    true
 }
 
 // MARK: - Retain / Release
@@ -208,9 +217,18 @@ fn CFRunLoopRunInMode(
     seconds: CFTimeInterval,
     _return_after_source_handled: bool,
 ) -> i32 {
+    // touchHLE's run loop is mode-agnostic: NSRunLoop stores its timers and
+    // sources in a single global list and `addTimer:forMode:` ignores the mode
+    // entirely. Engines like Unity drive their main loop through a private
+    // run-loop mode, so bailing out for any non-default mode used to make every
+    // such call a no-op. That both spammed the log and, more importantly,
+    // starved the run loop: CATransactions never committed, UIKit events and
+    // timers never fired, and scene/asset-load completion handlers scheduled on
+    // the run loop never ran (e.g. My Talking Tom never rendering its room
+    // background, only the clear colour). Treat an unknown mode the same as the
+    // default mode instead of skipping.
     if !is_known_mode(env, mode) {
-        log!("CFRunLoopRunInMode: unknown mode, skipping");
-        return kCFRunLoopRunFinished;
+        log_dbg!("CFRunLoopRunInMode: unknown mode, treating as default mode");
     }
     let current = CFRunLoopGetCurrent(env);
     if seconds == 0.0 {

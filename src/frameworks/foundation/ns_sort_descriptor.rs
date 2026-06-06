@@ -12,6 +12,7 @@ use crate::objc::{
     NSZonePtr, SEL,
 };
 
+#[derive(Default)]
 struct NSSortDescriptorHostObject {
     /// `NSString*` — key path to compare on
     key: id,

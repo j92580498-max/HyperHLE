@@ -17,6 +17,7 @@ use crate::Environment;
 
 pub type CGLayerRef = CFTypeRef;
 
+#[derive(Default)]
 struct CGLayerHostObject {
     /// Off-screen bitmap context that backs this layer.
     context: CGContextRef,

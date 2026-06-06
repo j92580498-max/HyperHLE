@@ -27,6 +27,7 @@ impl State {
     }
 }
 
+#[derive(Default)]
 struct NSUserDefaultsHostObject {
     /// Defaults meant to be seen by all applications.
     /// *Does NOT* persist on disk.

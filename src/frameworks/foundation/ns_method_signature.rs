@@ -15,6 +15,7 @@ use crate::libc::string::strncpy;
 use crate::mem::{ConstPtr, GuestUSize};
 use crate::objc::{autorelease, id, objc_classes, ClassExports, HostObject};
 
+#[derive(Default)]
 struct NSMethodSignatureHostObject {
     return_type: ConstPtr<u8>,
     arg_types: Vec<(ConstPtr<u8>, GuestUSize)>,

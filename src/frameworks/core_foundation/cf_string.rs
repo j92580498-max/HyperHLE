@@ -23,7 +23,7 @@ use super::{
 use crate::abi::{DotDotDot, VaList};
 use crate::dyld::{export_c_func, ConstantExports, FunctionExports, HostConstant};
 use crate::frameworks::foundation::{ns_string, unichar, NSNotFound, NSRange, NSUInteger};
-use crate::mem::{ConstPtr, MutPtr, MutVoidPtr};
+use crate::mem::{ConstPtr, GuestUSize, MutPtr, MutVoidPtr};
 use crate::objc::{id, msg, msg_class, nil};
 use crate::Environment;
 
@@ -280,15 +280,67 @@ fn CFStringCreateWithBytes(
         NSString string];
     }
 
-    // is_external representation not currently supported
-    if is_external {
-        log!("Warning: CFStringCreateWithBytes with is_external=true not fully supported");
-    }
+    // When is_external is true, the byte stream is in "external representation"
+    // format. For Unicode encodings this means the data may start with a BOM
+    // (Byte Order Mark) that indicates byte order. We detect the BOM, determine
+    // the correct encoding, and strip the BOM before passing data to NSString.
+    let (actual_bytes, actual_len, actual_encoding) = if is_external {
+        let len = num_bytes as GuestUSize;
+        let raw = env.mem.bytes_at(bytes, len);
 
-    let encoding = CFStringConvertEncodingToNSStringEncoding(env, encoding);
-    let length: NSUInteger = num_bytes.try_into().unwrap_or(0);
+        match encoding {
+            kCFStringEncodingUTF16 | kCFStringEncodingUnicode => {
+                // Check for UTF-16 BOM
+                if len >= 2 && raw[0] == 0xFF && raw[1] == 0xFE {
+                    // Little-endian BOM — skip 2 bytes
+                    let new_ptr = ConstPtr::<u8>::from_bits(bytes.to_bits() + 2);
+                    (new_ptr, (len - 2) as CFIndex, kCFStringEncodingUTF16LE)
+                } else if len >= 2 && raw[0] == 0xFE && raw[1] == 0xFF {
+                    // Big-endian BOM — skip 2 bytes
+                    let new_ptr = ConstPtr::<u8>::from_bits(bytes.to_bits() + 2);
+                    (new_ptr, (len - 2) as CFIndex, kCFStringEncodingUTF16BE)
+                } else {
+                    // No BOM — assume big-endian (per Apple convention)
+                    (bytes, num_bytes, kCFStringEncodingUTF16BE)
+                }
+            }
+            kCFStringEncodingUTF32 => {
+                // Check for UTF-32 BOM
+                if len >= 4 && raw[0] == 0xFF && raw[1] == 0xFE && raw[2] == 0x00 && raw[3] == 0x00 {
+                    // Little-endian BOM — skip 4 bytes
+                    let new_ptr = ConstPtr::<u8>::from_bits(bytes.to_bits() + 4);
+                    (new_ptr, (len - 4) as CFIndex, kCFStringEncodingUTF32LE)
+                } else if len >= 4 && raw[0] == 0x00 && raw[1] == 0x00 && raw[2] == 0xFE && raw[3] == 0xFF {
+                    // Big-endian BOM — skip 4 bytes
+                    let new_ptr = ConstPtr::<u8>::from_bits(bytes.to_bits() + 4);
+                    (new_ptr, (len - 4) as CFIndex, kCFStringEncodingUTF32BE)
+                } else {
+                    // No BOM — assume big-endian
+                    (bytes, num_bytes, kCFStringEncodingUTF32BE)
+                }
+            }
+            kCFStringEncodingUTF8 => {
+                // Check for UTF-8 BOM (EF BB BF)
+                if len >= 3 && raw[0] == 0xEF && raw[1] == 0xBB && raw[2] == 0xBF {
+                    let new_ptr = ConstPtr::<u8>::from_bits(bytes.to_bits() + 3);
+                    (new_ptr, (len - 3) as CFIndex, kCFStringEncodingUTF8)
+                } else {
+                    (bytes, num_bytes, kCFStringEncodingUTF8)
+                }
+            }
+            _ => {
+                // For other encodings, is_external has no special effect
+                (bytes, num_bytes, encoding)
+            }
+        }
+    } else {
+        (bytes, num_bytes, encoding)
+    };
+
+    let ns_encoding = CFStringConvertEncodingToNSStringEncoding(env, actual_encoding);
+    let length: NSUInteger = actual_len.try_into().unwrap_or(0);
     let ns_string: id = msg_class![env; NSString alloc];
-    msg![env; ns_string initWithBytes:bytes length:length encoding:encoding]
+    msg![env; ns_string initWithBytes:actual_bytes length:length encoding:ns_encoding]
 }
 
 fn CFStringCreateWithBytesNoCopy(
@@ -1459,6 +1511,28 @@ fn CFStringGetTypeID(_env: &mut Environment) -> u32 {
 
 // MARK: - Exports
 
+/// `Boolean CFStringGetFileSystemRepresentation(CFStringRef string,
+///                                              char *buffer,
+///                                              CFIndex maxBufLen)`
+///
+/// Per Apple docs: "Extracts the contents of a string object and stores
+/// them in a C-string buffer in a form suitable for use with POSIX file
+/// system calls. Returns true if the operation was successful."
+/// The file system representation on iOS is UTF-8.
+/// Reference: https://developer.apple.com/documentation/corefoundation/1542721-cfstringgetfilesystemrepresentat
+fn CFStringGetFileSystemRepresentation(
+    env: &mut Environment,
+    the_string: CFStringRef,
+    buffer: MutPtr<u8>,
+    max_buf_len: CFIndex,
+) -> bool {
+    if the_string.is_null() || buffer.is_null() || max_buf_len <= 0 {
+        return false;
+    }
+    // File system representation is always UTF-8 on iOS/macOS
+    CFStringGetCString(env, the_string, buffer, max_buf_len, kCFStringEncodingUTF8)
+}
+
 fn CFStringCreateExternalRepresentation(
     env: &mut Environment,
     _alloc: CFAllocatorRef,
@@ -2029,6 +2103,8 @@ pub const FUNCTIONS: FunctionExports = &[
     // Normalization and transformation
     export_c_func!(CFStringNormalize(_, _)),
     export_c_func!(CFStringTransform(_, _, _, _)),
+    // File system representation
+    export_c_func!(CFStringGetFileSystemRepresentation(_, _, _)),
     // Type info — CFStringGetTypeID is exported from cf_type; not duplicated.
     export_c_func!(CFStringCreateExternalRepresentation(_, _, _, _)),
 ];

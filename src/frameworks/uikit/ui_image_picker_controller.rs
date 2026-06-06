@@ -40,6 +40,7 @@ const UIImagePickerControllerCameraFlashModeOff: NSInteger = -1;
 const UIImagePickerControllerCameraFlashModeAuto: NSInteger = 0;
 const UIImagePickerControllerCameraFlashModeOn: NSInteger = 1;
 
+#[derive(Default)]
 struct UIImagePickerControllerHostObject {
     delegate: id,
     source_type: UIImagePickerControllerSourceType,

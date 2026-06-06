@@ -35,6 +35,7 @@ const kCFSocketTimeout: CFSocketError = -2;
 // CFRunLoopSource — opaque stub ref reused from CFTypeRef
 pub type CFRunLoopSourceRef = CFTypeRef;
 
+#[derive(Default)]
 struct CFSocketHostObject {
     native_handle: CFSocketNativeHandle,
 }

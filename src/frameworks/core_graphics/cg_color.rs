@@ -29,7 +29,7 @@ pub const CLASSES: ClassExports = objc_classes! {
 
 };
 
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Default)]
 pub struct CGColorHostObject {
     pub color_space_name: &'static str,
     // this assumes usage of CGColorSpaceGenericRGB

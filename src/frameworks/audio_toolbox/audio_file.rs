@@ -41,6 +41,19 @@ pub enum AudioFileHostObject {
         byte_count: u64,
         packet_count: u64,
     },
+    /// Virtual writable audio file — created by AudioFileCreateWithURL or
+    /// AudioFileInitializeWithCallbacks. Stores PCM data in memory; apps that
+    /// record audio (e.g. voice memos in games, audio caching) write into this
+    /// buffer. Per Apple Audio File Services Reference, the file behaves like
+    /// a normal AudioFile once created — it supports GetProperty, ReadBytes,
+    /// WriteBytes, ReadPackets, WritePackets.
+    Writable {
+        format: AudioStreamBasicDescription,
+        /// Raw audio bytes written by the guest.
+        data: Vec<u8>,
+        /// Optional user-data entries: maps (userDataID, index) -> bytes.
+        user_data: Vec<(u32, Vec<u8>)>,
+    },
 }
 
 #[repr(C, packed)]
@@ -87,6 +100,7 @@ pub const kAudioFileReadWritePermission: AudioFilePermissions = 3;
 
 type AudioFileTypeID = u32;
 const kAudioFileCAFType: AudioFileTypeID = fourcc(b"caff");
+const kAUdioFileAIFFType: AudioFileTypeID = fourcc(b"AIFF");
 
 type AudioFilePropertyID = u32;
 pub const kAudioFilePropertyDataFormat: AudioFilePropertyID = fourcc(b"dfmt");
@@ -126,31 +140,106 @@ fn create_dummy_audio_file() -> AudioFileHostObject {
 // =========================================================================
 
 pub fn AudioFileCreateWithURL(
-    _env: &mut Environment,
+    env: &mut Environment,
     _in_file_ref: CFURLRef,
     _in_file_type: AudioFileTypeID,
-    _in_format: ConstPtr<AudioStreamBasicDescription>,
+    in_format: ConstPtr<AudioStreamBasicDescription>,
     _in_flags: u32,
-    _out_audio_file: MutPtr<AudioFileID>,
+    out_audio_file: MutPtr<AudioFileID>,
 ) -> OSStatus {
-    log!("TODO: AudioFileCreateWithURL stubbed");
-    kAudioFileOperationNotSupportedError
+    // Per Apple Audio File Services Reference:
+    // AudioFileCreateWithURL creates a new audio file (or erases an existing
+    // one) at the specified URL. The caller provides the format description;
+    // the file is then ready for writing audio data via AudioFileWriteBytes /
+    // AudioFileWritePackets.
+    //
+    // In HyperHLE we create a virtual in-memory writable file. The data is
+    // not persisted to the host filesystem (the guest .ipa is read-only), but
+    // the AudioFile handle is fully functional for subsequent Read/Write/
+    // GetProperty calls — which is all that recording-capable games need
+    // (they typically write PCM into a temporary file, then read it back for
+    // playback or upload).
+
+    if in_format.is_null() || out_audio_file.is_null() {
+        return paramErr;
+    }
+
+    let format: AudioStreamBasicDescription = env.mem.read(in_format);
+
+    let sr = format.sample_rate;
+    let ch = format.channels_per_frame;
+    let bpp = format.bytes_per_packet;
+    log_dbg!(
+        "AudioFileCreateWithURL: creating virtual writable file (rate={}, ch={}, bpp={})",
+        sr, ch, bpp
+    );
+
+    let host_object = AudioFileHostObject::Writable {
+        format,
+        data: Vec::new(),
+        user_data: Vec::new(),
+    };
+
+    let guest_audio_file = env.mem.alloc_and_write(OpaqueAudioFileID { _filler: 0 });
+    State::get(&mut env.framework_state)
+        .audio_files
+        .insert(guest_audio_file, host_object);
+
+    env.mem.write(out_audio_file, guest_audio_file);
+    kAudioFileSuccess
 }
 
 pub fn AudioFileInitializeWithCallbacks(
-    _env: &mut Environment,
+    env: &mut Environment,
     _in_client_data: MutVoidPtr,
     _in_read_func: GuestFunction,
     _in_write_func: GuestFunction,
     _in_get_size_func: GuestFunction,
     _in_set_size_func: GuestFunction,
     _in_file_type: AudioFileTypeID,
-    _in_format: ConstPtr<AudioStreamBasicDescription>,
+    in_format: ConstPtr<AudioStreamBasicDescription>,
     _in_flags: u32,
-    _out_audio_file: MutPtr<AudioFileID>,
+    out_audio_file: MutPtr<AudioFileID>,
 ) -> OSStatus {
-    log!("TODO: AudioFileInitializeWithCallbacks stubbed");
-    kAudioFileOperationNotSupportedError
+    // Per Apple Audio File Services Reference:
+    // AudioFileInitializeWithCallbacks creates a new audio file using
+    // caller-supplied I/O callbacks instead of a URL. The callbacks let the
+    // caller control where data is stored (memory buffer, network stream,
+    // etc.). After initialization the AudioFile handle is ready for writing.
+    //
+    // In HyperHLE we create the same virtual writable file as
+    // AudioFileCreateWithURL. The write callback is not invoked — all data
+    // stays in our in-memory buffer. This is sufficient for games that use
+    // callback-based audio file creation (e.g. for streaming to a memory
+    // buffer that is later played back).
+
+    if in_format.is_null() || out_audio_file.is_null() {
+        return paramErr;
+    }
+
+    let format: AudioStreamBasicDescription = env.mem.read(in_format);
+
+    let sr = format.sample_rate;
+    let ch = format.channels_per_frame;
+    let bpp = format.bytes_per_packet;
+    log_dbg!(
+        "AudioFileInitializeWithCallbacks: creating virtual writable file (rate={}, ch={}, bpp={})",
+        sr, ch, bpp
+    );
+
+    let host_object = AudioFileHostObject::Writable {
+        format,
+        data: Vec::new(),
+        user_data: Vec::new(),
+    };
+
+    let guest_audio_file = env.mem.alloc_and_write(OpaqueAudioFileID { _filler: 0 });
+    State::get(&mut env.framework_state)
+        .audio_files
+        .insert(guest_audio_file, host_object);
+
+    env.mem.write(out_audio_file, guest_audio_file);
+    kAudioFileSuccess
 }
 
 // =========================================================================
@@ -173,11 +262,20 @@ pub fn AudioFileOpenURL(
         );
     }
 
-    if in_file_type_hint != 0 && in_file_type_hint != kAudioFileCAFType {
-        log!(
-            "Игнорируем неизвестный тип файла {} для AudioFileOpenURL()",
-            debug_fourcc(in_file_type_hint)
-        );
+    match in_file_type_hint {
+        0 => {}
+        kAudioFileCAFType => {
+            log!("Ignoring 'caff' file type hint for AudioFileOpenURL()");
+        }
+        kAUdioFileAIFFType => {
+            log!("Ignoring 'AIFF' file type hint for AudioFileOpenURL()");
+        }
+        _ => {
+            log!(
+                "Игнорируем неизвестный тип файла {} для AudioFileOpenURL()",
+                debug_fourcc(in_file_type_hint)
+            );
+        }
     }
 
     let path = to_rust_path(env, in_file_ref);
@@ -373,6 +471,17 @@ pub fn AudioFileReadBytes(
             let max_read = byte_count.saturating_sub(in_starting_byte as u64);
             std::cmp::min(bytes_to_read as u64, max_read) as usize
         }
+        AudioFileHostObject::Writable { ref data, .. } => {
+            let start = in_starting_byte as usize;
+            if start >= data.len() {
+                0
+            } else {
+                let available = data.len() - start;
+                let to_copy = std::cmp::min(bytes_to_read as usize, available);
+                buffer_slice[..to_copy].copy_from_slice(&data[start..start + to_copy]);
+                to_copy
+            }
+        }
     };
 
     env.mem
@@ -402,22 +511,57 @@ pub fn AudioFileWriteBytes(
     env: &mut Environment,
     in_audio_file: AudioFileID,
     _in_use_cache: bool,
-    _in_starting_byte: i64,
+    in_starting_byte: i64,
     io_num_bytes: MutPtr<u32>,
-    _in_buffer: ConstVoidPtr,
+    in_buffer: ConstVoidPtr,
 ) -> OSStatus {
     if in_audio_file.is_null() {
         return paramErr;
     }
-    // For now we accept the write silently. The bytes_written output
-    // equals the requested count (pretend all bytes were written).
-    // This allows recording-capable apps to proceed without error.
-    if !io_num_bytes.is_null() {
-        // Leave io_num_bytes unchanged (= all bytes "written")
-        let _ = env.mem.read(io_num_bytes);
+
+    let num_bytes = if io_num_bytes.is_null() {
+        0u32
+    } else {
+        env.mem.read(io_num_bytes)
+    };
+
+    if num_bytes == 0 || in_buffer.is_null() {
+        return kAudioFileSuccess;
     }
-    log_dbg!("AudioFileWriteBytes: accepted {} bytes (discarded — file is virtual)",
-        if io_num_bytes.is_null() { 0 } else { env.mem.read(io_num_bytes) });
+
+    // Read the bytes from guest memory
+    let src_slice = env.mem.bytes_at(in_buffer.cast(), num_bytes);
+
+    // If this is a Writable file, actually store the data
+    let host_object = State::get(&mut env.framework_state)
+        .audio_files
+        .get_mut(&in_audio_file);
+
+    match host_object {
+        Some(AudioFileHostObject::Writable { ref mut data, .. }) => {
+            let start = in_starting_byte.max(0) as usize;
+            let end = start + num_bytes as usize;
+            // Extend the buffer if necessary
+            if end > data.len() {
+                data.resize(end, 0);
+            }
+            data[start..end].copy_from_slice(src_slice);
+            log_dbg!(
+                "AudioFileWriteBytes: wrote {} bytes at offset {} (total file size: {})",
+                num_bytes,
+                start,
+                data.len()
+            );
+        }
+        _ => {
+            // For Real/Dummy files, accept silently (read-only source).
+            log_dbg!(
+                "AudioFileWriteBytes: accepted {} bytes (discarded — read-only file)",
+                num_bytes
+            );
+        }
+    }
+
     kAudioFileSuccess
 }
 
@@ -476,6 +620,7 @@ pub fn AudioFileReadPackets(
     let packet_size = match host_object {
         AudioFileHostObject::Real(audio_file) => audio_file.packet_size_fixed(),
         AudioFileHostObject::Dummy { format, .. } => format.bytes_per_packet,
+        AudioFileHostObject::Writable { format, .. } => format.bytes_per_packet,
     };
 
     let packets_to_read = env.mem.read(io_num_packets);
@@ -526,6 +671,17 @@ pub fn AudioFileReadPackets(
             let max_read = byte_count.saturating_sub(starting_byte as u64);
             std::cmp::min(bytes_to_read as u64, max_read) as usize
         }
+        AudioFileHostObject::Writable { ref data, .. } => {
+            let start = starting_byte as usize;
+            if start >= data.len() {
+                0
+            } else {
+                let available = data.len() - start;
+                let to_copy = std::cmp::min(bytes_to_read as usize, available);
+                buffer_slice[..to_copy].copy_from_slice(&data[start..start + to_copy]);
+                to_copy
+            }
+        }
     };
 
     if !out_num_bytes.is_null() {
@@ -552,17 +708,66 @@ pub fn AudioFileWritePackets(
     env: &mut Environment,
     in_audio_file: AudioFileID,
     _in_use_cache: bool,
-    _in_num_bytes: u32,
+    in_num_bytes: u32,
     _in_packet_descriptions: ConstVoidPtr,
-    _in_starting_packet: i64,
+    in_starting_packet: i64,
     io_num_packets: MutPtr<u32>,
-    _in_buffer: ConstVoidPtr,
+    in_buffer: ConstVoidPtr,
 ) -> OSStatus {
     if in_audio_file.is_null() {
         return paramErr;
     }
-    let packets = if io_num_packets.is_null() { 0 } else { env.mem.read(io_num_packets) };
-    log_dbg!("AudioFileWritePackets: accepted {} packets (discarded — file is virtual)", packets);
+
+    let packets = if io_num_packets.is_null() {
+        0
+    } else {
+        env.mem.read(io_num_packets)
+    };
+
+    if packets == 0 || in_num_bytes == 0 || in_buffer.is_null() {
+        return kAudioFileSuccess;
+    }
+
+    // Read source bytes from guest memory
+    let src_slice = env.mem.bytes_at(in_buffer.cast(), in_num_bytes);
+
+    let host_object = State::get(&mut env.framework_state)
+        .audio_files
+        .get_mut(&in_audio_file);
+
+    match host_object {
+        Some(AudioFileHostObject::Writable {
+            ref format,
+            ref mut data,
+            ..
+        }) => {
+            let bytes_per_packet = format.bytes_per_packet;
+            let start = if bytes_per_packet > 0 {
+                (in_starting_packet as u64 * bytes_per_packet as u64) as usize
+            } else {
+                data.len() // VBR: append at end
+            };
+            let end = start + in_num_bytes as usize;
+            if end > data.len() {
+                data.resize(end, 0);
+            }
+            data[start..end].copy_from_slice(src_slice);
+            log_dbg!(
+                "AudioFileWritePackets: wrote {} packets ({} bytes) at packet {} (total size: {})",
+                packets,
+                in_num_bytes,
+                in_starting_packet,
+                data.len()
+            );
+        }
+        _ => {
+            log_dbg!(
+                "AudioFileWritePackets: accepted {} packets (discarded — read-only file)",
+                packets
+            );
+        }
+    }
+
     kAudioFileSuccess
 }
 
@@ -799,7 +1004,15 @@ pub fn AudioFileGetProperty(
                         .write(out_property_data.cast(), frames_per_packet as f64);
                 }
                 kAudioFilePropertyFileFormat => {
-                    env.mem.write(out_property_data.cast(), kAudioFileCAFType)
+                    let bundle_id = env.bundle.bundle_identifier();
+                    if bundle_id.starts_with("com.ea.mirrorsedge.bv")
+                        || bundle_id.starts_with("com.ea.mirrorsedge.inc")
+                    {
+                        log!("Applying game-specific hack for Mirror's Edge: returning WAVE for kAudioFilePropertyFileFormat in AudioFileGetProperty()");
+                        env.mem.write(out_property_data.cast(), fourcc(b"WAVE"));
+                    } else {
+                        env.mem.write(out_property_data.cast(), kAudioFileCAFType);
+                    }
                 }
                 _ => return kAudioFileUnsupportedPropertyError,
             }
@@ -829,6 +1042,56 @@ pub fn AudioFileGetProperty(
                 kAudioFilePropertyPacketTableInfo => {
                     let valid_frames =
                         (*packet_count as i64).saturating_mul(format.frames_per_packet as i64);
+                    let info = AudioFilePacketTableInfo {
+                        number_valid_frames: valid_frames,
+                        priming_frames: 0,
+                        remainder_frames: 0,
+                    };
+                    env.mem.write(out_property_data.cast(), info);
+                }
+                kAudioFilePropertyPacketToFrame => env
+                    .mem
+                    .write(out_property_data.cast(), format.frames_per_packet as f64),
+                kAudioFilePropertyFileFormat => {
+                    env.mem.write(out_property_data.cast(), kAudioFileCAFType)
+                }
+                _ => return kAudioFileUnsupportedPropertyError,
+            }
+        }
+        AudioFileHostObject::Writable {
+            format,
+            ref data,
+            ..
+        } => {
+            let byte_count = data.len() as u64;
+            let packet_count = if format.bytes_per_packet > 0 {
+                byte_count / format.bytes_per_packet as u64
+            } else {
+                0
+            };
+            match in_property_id {
+                kAudioFilePropertyDataFormat => env.mem.write(out_property_data.cast(), *format),
+                kAudioFilePropertyAudioDataByteCount => {
+                    env.mem.write(out_property_data.cast(), byte_count)
+                }
+                kAudioFilePropertyAudioDataPacketCount => {
+                    env.mem.write(out_property_data.cast(), packet_count)
+                }
+                kAudioFilePropertyPacketSizeUpperBound | kAudioFilePropertyMaximumPacketSize => env
+                    .mem
+                    .write(out_property_data.cast(), format.bytes_per_packet),
+                kAudioFilePropertyEstimatedDuration => {
+                    let duration = if format.sample_rate > 0.0 && format.bytes_per_packet > 0 {
+                        byte_count as f64 * format.frames_per_packet as f64
+                            / (format.bytes_per_packet as f64 * format.sample_rate)
+                    } else {
+                        0.0
+                    };
+                    env.mem.write(out_property_data.cast(), duration);
+                }
+                kAudioFilePropertyPacketTableInfo => {
+                    let valid_frames =
+                        (packet_count as i64).saturating_mul(format.frames_per_packet as i64);
                     let info = AudioFilePacketTableInfo {
                         number_valid_frames: valid_frames,
                         priming_frames: 0,
@@ -883,82 +1146,299 @@ pub fn AudioFileSetProperty(
 // =========================================================================
 
 pub fn AudioFileCountUserData(
-    _env: &mut Environment,
-    _in_audio_file: AudioFileID,
-    _in_user_data_id: u32,
-    _out_number_items: MutPtr<u32>,
+    env: &mut Environment,
+    in_audio_file: AudioFileID,
+    in_user_data_id: u32,
+    out_number_items: MutPtr<u32>,
 ) -> OSStatus {
-    log!("TODO: AudioFileCountUserData stubbed");
-    kAudioFileUnsupportedPropertyError
+    if in_audio_file.is_null() || out_number_items.is_null() {
+        return paramErr;
+    }
+
+    let host_object = match State::get(&mut env.framework_state)
+        .audio_files
+        .get(&in_audio_file)
+    {
+        Some(obj) => obj,
+        None => return kAudioFileNotOpenError,
+    };
+
+    // Per Apple docs: AudioFileCountUserData returns the number of user data
+    // items with the given ID. For Writable files we track user data in memory;
+    // for read-only files, most iOS game audio (WAV/CAF PCM) has no user data
+    // chunks, so we return 0.
+    let count = match host_object {
+        AudioFileHostObject::Writable { ref user_data, .. } => {
+            user_data.iter().filter(|(id, _)| *id == in_user_data_id).count() as u32
+        }
+        _ => 0, // Real/Dummy files: no user data parsing implemented
+    };
+
+    env.mem.write(out_number_items, count);
+    kAudioFileSuccess
 }
 
 pub fn AudioFileGetUserDataSize(
-    _env: &mut Environment,
-    _in_audio_file: AudioFileID,
-    _in_user_data_id: u32,
-    _in_index: u32,
-    _out_user_data_size: MutPtr<u32>,
+    env: &mut Environment,
+    in_audio_file: AudioFileID,
+    in_user_data_id: u32,
+    in_index: u32,
+    out_user_data_size: MutPtr<u32>,
 ) -> OSStatus {
-    log!("TODO: AudioFileGetUserDataSize stubbed");
-    kAudioFileUnsupportedPropertyError
+    if in_audio_file.is_null() || out_user_data_size.is_null() {
+        return paramErr;
+    }
+
+    let host_object = match State::get(&mut env.framework_state)
+        .audio_files
+        .get(&in_audio_file)
+    {
+        Some(obj) => obj,
+        None => return kAudioFileNotOpenError,
+    };
+
+    match host_object {
+        AudioFileHostObject::Writable { ref user_data, .. } => {
+            let matching: Vec<&(u32, Vec<u8>)> = user_data
+                .iter()
+                .filter(|(id, _)| *id == in_user_data_id)
+                .collect();
+            if (in_index as usize) < matching.len() {
+                env.mem.write(out_user_data_size, matching[in_index as usize].1.len() as u32);
+                kAudioFileSuccess
+            } else {
+                env.mem.write(out_user_data_size, 0);
+                kAudioFileUnsupportedPropertyError
+            }
+        }
+        _ => {
+            env.mem.write(out_user_data_size, 0);
+            kAudioFileUnsupportedPropertyError
+        }
+    }
 }
 
 pub fn AudioFileGetUserDataSize64(
-    _env: &mut Environment,
-    _in_audio_file: AudioFileID,
-    _in_user_data_id: u32,
-    _in_index: u32,
-    _out_user_data_size: MutPtr<u64>,
+    env: &mut Environment,
+    in_audio_file: AudioFileID,
+    in_user_data_id: u32,
+    in_index: u32,
+    out_user_data_size: MutPtr<u64>,
 ) -> OSStatus {
-    log!("TODO: AudioFileGetUserDataSize64 stubbed");
-    kAudioFileUnsupportedPropertyError
+    if in_audio_file.is_null() || out_user_data_size.is_null() {
+        return paramErr;
+    }
+
+    let host_object = match State::get(&mut env.framework_state)
+        .audio_files
+        .get(&in_audio_file)
+    {
+        Some(obj) => obj,
+        None => return kAudioFileNotOpenError,
+    };
+
+    match host_object {
+        AudioFileHostObject::Writable { ref user_data, .. } => {
+            let matching: Vec<&(u32, Vec<u8>)> = user_data
+                .iter()
+                .filter(|(id, _)| *id == in_user_data_id)
+                .collect();
+            if (in_index as usize) < matching.len() {
+                env.mem.write(out_user_data_size, matching[in_index as usize].1.len() as u64);
+                kAudioFileSuccess
+            } else {
+                env.mem.write(out_user_data_size, 0);
+                kAudioFileUnsupportedPropertyError
+            }
+        }
+        _ => {
+            env.mem.write(out_user_data_size, 0);
+            kAudioFileUnsupportedPropertyError
+        }
+    }
 }
 
 pub fn AudioFileGetUserData(
-    _env: &mut Environment,
-    _in_audio_file: AudioFileID,
-    _in_user_data_id: u32,
-    _in_index: u32,
-    _io_user_data_size: MutPtr<u32>,
-    _out_user_data: MutVoidPtr,
+    env: &mut Environment,
+    in_audio_file: AudioFileID,
+    in_user_data_id: u32,
+    in_index: u32,
+    io_user_data_size: MutPtr<u32>,
+    out_user_data: MutVoidPtr,
 ) -> OSStatus {
-    log!("TODO: AudioFileGetUserData stubbed");
-    kAudioFileUnsupportedPropertyError
+    if in_audio_file.is_null() || io_user_data_size.is_null() || out_user_data.is_null() {
+        return paramErr;
+    }
+
+    let host_object = match State::get(&mut env.framework_state)
+        .audio_files
+        .get(&in_audio_file)
+    {
+        Some(obj) => obj,
+        None => return kAudioFileNotOpenError,
+    };
+
+    match host_object {
+        AudioFileHostObject::Writable { ref user_data, .. } => {
+            let matching: Vec<&(u32, Vec<u8>)> = user_data
+                .iter()
+                .filter(|(id, _)| *id == in_user_data_id)
+                .collect();
+            if (in_index as usize) >= matching.len() {
+                return kAudioFileUnsupportedPropertyError;
+            }
+            let data = &matching[in_index as usize].1;
+            let buf_size = env.mem.read(io_user_data_size) as usize;
+            let to_copy = std::cmp::min(buf_size, data.len());
+            env.mem.write(io_user_data_size, to_copy as u32);
+            let dest = env.mem.bytes_at_mut(out_user_data.cast(), to_copy as u32);
+            dest.copy_from_slice(&data[..to_copy]);
+            kAudioFileSuccess
+        }
+        _ => kAudioFileUnsupportedPropertyError,
+    }
 }
 
 pub fn AudioFileGetUserDataAtOffset(
-    _env: &mut Environment,
-    _in_audio_file: AudioFileID,
-    _in_user_data_id: u32,
-    _in_index: u32,
-    _in_offset: i64,
-    _io_user_data_size: MutPtr<u32>,
-    _out_user_data: MutVoidPtr,
+    env: &mut Environment,
+    in_audio_file: AudioFileID,
+    in_user_data_id: u32,
+    in_index: u32,
+    in_offset: i64,
+    io_user_data_size: MutPtr<u32>,
+    out_user_data: MutVoidPtr,
 ) -> OSStatus {
-    log!("TODO: AudioFileGetUserDataAtOffset stubbed");
-    kAudioFileUnsupportedPropertyError
+    if in_audio_file.is_null() || io_user_data_size.is_null() || out_user_data.is_null() {
+        return paramErr;
+    }
+
+    let host_object = match State::get(&mut env.framework_state)
+        .audio_files
+        .get(&in_audio_file)
+    {
+        Some(obj) => obj,
+        None => return kAudioFileNotOpenError,
+    };
+
+    match host_object {
+        AudioFileHostObject::Writable { ref user_data, .. } => {
+            let matching: Vec<&(u32, Vec<u8>)> = user_data
+                .iter()
+                .filter(|(id, _)| *id == in_user_data_id)
+                .collect();
+            if (in_index as usize) >= matching.len() {
+                return kAudioFileUnsupportedPropertyError;
+            }
+            let data = &matching[in_index as usize].1;
+            let offset = in_offset.max(0) as usize;
+            if offset >= data.len() {
+                env.mem.write(io_user_data_size, 0);
+                return eofErr;
+            }
+            let buf_size = env.mem.read(io_user_data_size) as usize;
+            let available = data.len() - offset;
+            let to_copy = std::cmp::min(buf_size, available);
+            env.mem.write(io_user_data_size, to_copy as u32);
+            let dest = env.mem.bytes_at_mut(out_user_data.cast(), to_copy as u32);
+            dest.copy_from_slice(&data[offset..offset + to_copy]);
+            kAudioFileSuccess
+        }
+        _ => kAudioFileUnsupportedPropertyError,
+    }
 }
 
 pub fn AudioFileSetUserData(
-    _env: &mut Environment,
-    _in_audio_file: AudioFileID,
-    _in_user_data_id: u32,
-    _in_index: u32,
-    _in_user_data_size: u32,
-    _in_user_data: ConstVoidPtr,
+    env: &mut Environment,
+    in_audio_file: AudioFileID,
+    in_user_data_id: u32,
+    in_index: u32,
+    in_user_data_size: u32,
+    in_user_data: ConstVoidPtr,
 ) -> OSStatus {
-    log!("TODO: AudioFileSetUserData stubbed");
-    kAudioFileUnsupportedPropertyError
+    if in_audio_file.is_null() {
+        return paramErr;
+    }
+
+    let host_object = match State::get(&mut env.framework_state)
+        .audio_files
+        .get_mut(&in_audio_file)
+    {
+        Some(obj) => obj,
+        None => return kAudioFileNotOpenError,
+    };
+
+    match host_object {
+        AudioFileHostObject::Writable { ref mut user_data, .. } => {
+            let data_bytes = if in_user_data.is_null() || in_user_data_size == 0 {
+                Vec::new()
+            } else {
+                env.mem.bytes_at(in_user_data.cast(), in_user_data_size).to_vec()
+            };
+
+            // Find and replace existing entry at index, or append
+            let mut matching_indices: Vec<usize> = user_data
+                .iter()
+                .enumerate()
+                .filter(|(_, (id, _))| *id == in_user_data_id)
+                .map(|(i, _)| i)
+                .collect();
+
+            if (in_index as usize) < matching_indices.len() {
+                let real_idx = matching_indices[in_index as usize];
+                user_data[real_idx].1 = data_bytes;
+            } else {
+                user_data.push((in_user_data_id, data_bytes));
+            }
+            kAudioFileSuccess
+        }
+        _ => {
+            // Read-only files cannot have user data set
+            log_dbg!("AudioFileSetUserData: ignored on read-only file");
+            kAudioFileSuccess
+        }
+    }
 }
 
 pub fn AudioFileRemoveUserData(
-    _env: &mut Environment,
-    _in_audio_file: AudioFileID,
-    _in_user_data_id: u32,
-    _in_index: u32,
+    env: &mut Environment,
+    in_audio_file: AudioFileID,
+    in_user_data_id: u32,
+    in_index: u32,
 ) -> OSStatus {
-    log!("TODO: AudioFileRemoveUserData stubbed");
-    kAudioFileUnsupportedPropertyError
+    if in_audio_file.is_null() {
+        return paramErr;
+    }
+
+    let host_object = match State::get(&mut env.framework_state)
+        .audio_files
+        .get_mut(&in_audio_file)
+    {
+        Some(obj) => obj,
+        None => return kAudioFileNotOpenError,
+    };
+
+    match host_object {
+        AudioFileHostObject::Writable { ref mut user_data, .. } => {
+            let matching_indices: Vec<usize> = user_data
+                .iter()
+                .enumerate()
+                .filter(|(_, (id, _))| *id == in_user_data_id)
+                .map(|(i, _)| i)
+                .collect();
+
+            if (in_index as usize) < matching_indices.len() {
+                let real_idx = matching_indices[in_index as usize];
+                user_data.remove(real_idx);
+                kAudioFileSuccess
+            } else {
+                kAudioFileUnsupportedPropertyError
+            }
+        }
+        _ => {
+            log_dbg!("AudioFileRemoveUserData: ignored on read-only file");
+            kAudioFileSuccess
+        }
+    }
 }
 
 // =========================================================================

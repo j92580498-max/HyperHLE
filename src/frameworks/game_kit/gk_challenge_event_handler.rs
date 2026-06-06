@@ -36,6 +36,7 @@ impl State {
     }
 }
 
+#[derive(Default)]
 struct GKChallengeEventHandlerHostObject {
     /// `id<GKChallengeEventHandlerDelegate>` — assigned (NOT retained)
     /// per Apple's docs:

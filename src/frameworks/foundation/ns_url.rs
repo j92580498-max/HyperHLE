@@ -27,6 +27,15 @@ enum NSURLHostObject {
         ns_string: id,
     },
 }
+impl Default for NSURLHostObject {
+    // Phantom-fallback value; an `OtherURL` with `nil` string mirrors what a
+    // misbehaving guest would observe if it queried an unallocated NSURL.
+    fn default() -> Self {
+        NSURLHostObject::OtherURL {
+            ns_string: crate::objc::nil,
+        }
+    }
+}
 impl HostObject for NSURLHostObject {}
 
 // MARK: - URL resource-value keys (Apple Foundation `NSURL.h`).

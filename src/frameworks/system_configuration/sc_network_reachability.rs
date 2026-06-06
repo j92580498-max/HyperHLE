@@ -35,6 +35,7 @@ pub const CLASSES: ClassExports = objc_classes! {
     @end
 };
 
+#[derive(Default)]
 struct SCNetworkReachabilityHostObject {
     name: Option<String>,
     callout: Option<GuestFunction>,

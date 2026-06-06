@@ -159,8 +159,8 @@ the following license:
 ";
 
 const INTERNAL_NOTO_FONTS_DESCRIPTION: &str = "
-This distribution of touchHLE includes Noto Sans CJK fonts, available under the
-following license:
+This distribution of touchHLE includes Noto Sans CJK and Noto Sans Arabic fonts,
+available under the following license:
 ";
 
 fn read_bundled_file(path: &str) -> String {

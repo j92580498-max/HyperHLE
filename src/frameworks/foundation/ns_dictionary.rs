@@ -10,7 +10,10 @@ use super::ns_property_list_serialization::{
     deserialize_plist_from_file, NSPropertyListBinaryFormat_v1_0,
 };
 use super::ns_string::{from_rust_string, get_static_str, to_rust_string};
-use super::{_nib_archive_decoder, ns_array, ns_keyed_unarchiver, ns_string, ns_url, NSUInteger};
+use super::{
+    _nib_archive_decoder, ns_array, ns_keyed_archiver, ns_keyed_unarchiver, ns_string, ns_url,
+    NSUInteger,
+};
 use crate::abi::{CallFromHost, GuestFunction, VaList};
 use crate::frameworks::core_foundation::{CFHashCode, CFIndex};
 use crate::frameworks::foundation::ns_enumerator::{
@@ -324,6 +327,16 @@ pub fn init_with_objects_and_keys(
 
 /// Helper function to share `initWithDictionary:` implementations
 fn init_with_dictionary_common(env: &mut Environment, this: id, other_dict: id) -> id {
+    // Apple's `-[NSDictionary initWithDictionary:nil]` returns an empty
+    // dictionary instead of crashing. Guard against guest code calling us
+    // with `nil` (or a non-dictionary object that has no host record)
+    // before we try to swap host objects, so we don't have to rely on the
+    // objc phantom-fallback path producing a valid empty `HashMap`.
+    if other_dict == nil {
+        *env.objc.borrow_mut(this) = <DictionaryHostObject as Default>::default();
+        return this;
+    }
+
     let other_host_object: DictionaryHostObject = std::mem::take(env.objc.borrow_mut(other_dict));
     let mut host_object = <DictionaryHostObject as Default>::default();
 
@@ -691,6 +704,99 @@ pub const CLASSES: ClassExports = objc_classes! {
     env.mem.free(stop_ptr.cast());
 }
 
+- (bool)isEqual:(id)other {
+    if this == other {
+        return true;
+    }
+    let class: Class = msg_class![env; NSDictionary class];
+    if !msg![env; other isKindOfClass:class] {
+        return false;
+    }
+    msg![env; this isEqualToDictionary:other]
+}
+- (bool)isEqualToDictionary:(id)other { // NSDictionary *
+    if other == nil {
+        return false;
+    }
+    let count: NSUInteger = msg![env; this count];
+    let other_count: NSUInteger = msg![env; other count];
+    if count != other_count {
+        return false;
+    }
+    let keys_arr = msg![env; this allKeys];
+    let keys_count: NSUInteger = msg![env; keys_arr count];
+    for i in 0..keys_count {
+        let key: id = msg![env; keys_arr objectAtIndex:i];
+        let value: id = msg![env; this objectForKey:key];
+        let other_value: id = msg![env; other objectForKey:key];
+        let equal: bool = msg![env; value isEqual:other_value];
+        if !equal {
+            return false;
+        }
+    }
+    true
+}
+// Some apps (e.g. Rigonauts) incorrectly call mutation methods on
+// immutable NSDictionary instances. Rather than failing with "does not
+// respond to selector", we handle these gracefully. The underlying
+// DictionaryHostObject is the same structure for both mutable and
+// immutable, so we can safely perform the mutation.
+- (())addEntriesFromDictionary:(id)other { // NSDictionary *
+    if other == nil {
+        return;
+    }
+    log_dbg!(
+        "Warning: addEntriesFromDictionary: called on immutable NSDictionary {:?}; \
+         performing mutation anyway for compatibility.",
+        this
+    );
+    let mut keys: Vec<id> = Vec::new();
+    let key_enum: id = msg![env; other keyEnumerator];
+    if key_enum == nil {
+        return;
+    }
+    loop {
+        let next: id = msg![env; key_enum nextObject];
+        if next == nil {
+            break;
+        }
+        retain(env, next);
+        keys.push(next);
+    }
+    for key in keys {
+        let val: id = msg![env; other objectForKey:key];
+        if val != nil {
+            // Use the internal insert directly since setObject:forKey:
+            // may not be declared on this class.
+            let mut host_obj: DictionaryHostObject = std::mem::take(env.objc.borrow_mut(this));
+            host_obj.insert(env, key, val, /* copy_key: */ true);
+            *env.objc.borrow_mut(this) = host_obj;
+        }
+        release(env, key);
+    }
+}
+
+// Some apps call setObject:forKey: on immutable dictionaries as well.
+- (())setObject:(id)object forKey:(id)key {
+    if object == nil || key == nil {
+        if key == nil {
+            log!("Warning: [NSDictionary setObject:forKey:] attempt to use nil key — ignoring");
+        }
+        if object == nil {
+            log!("Warning: [NSDictionary setObject:forKey:] attempt to insert nil object — ignoring");
+        }
+        return;
+    }
+    log_dbg!(
+        "Warning: setObject:forKey: called on immutable NSDictionary {:?}; \
+         performing mutation anyway for compatibility.",
+        this
+    );
+    let mut host_obj: DictionaryHostObject = std::mem::take(env.objc.borrow_mut(this));
+    host_obj.insert(env, key, object, /* copy_key: */ true);
+    *env.objc.borrow_mut(this) = host_obj;
+}
+
 @end
 
 // NSMutableDictionary is an abstract class. A subclass must provide everything
@@ -908,25 +1014,15 @@ pub const CLASSES: ClassExports = objc_classes! {
         let pairs: Vec<(id, id)> = host.map.values()
            .flat_map(|v| v.iter().copied())
            .collect();
+        let keys: Vec<id> = pairs.iter().map(|&(k, _)| k).collect();
+        let objects: Vec<id> = pairs.iter().map(|&(_, v)| v).collect();
 
-        let keys_array: id = msg_class![env; NSMutableArray new];
-        let objects_array: id = msg_class![env; NSMutableArray new];
-        for (k, v) in &pairs {
-            let key = *k;
-            let val = *v;
-            () = msg![env; keys_array addObject:key];
-            () = msg![env; objects_array addObject:val];
-        }
-
-        let keys_str = from_rust_string(env, "NS.keys".to_string());
-        let objects_str = from_rust_string(env, "NS.objects".to_string());
-        () = msg![env; coder encodeObject:keys_array forKey:keys_str];
-        () = msg![env; coder encodeObject:objects_array forKey:objects_str];
-
-        release(env, keys_str);
-        release(env, objects_str);
-        release(env, keys_array);
-        release(env, objects_array);
+        // NSKeyedArchiver stores a dictionary's contents as two parallel inline
+        // arrays of UID references, under "NS.keys" and "NS.objects" (Apple's
+        // format, which is what our decoder reads back). See
+        // `encode_objects_as_uid_array`.
+        ns_keyed_archiver::encode_objects_as_uid_array(env, coder, "NS.keys", &keys);
+        ns_keyed_archiver::encode_objects_as_uid_array(env, coder, "NS.objects", &objects);
     } else {
         log!(
             "Warning: -[_touchHLE_NSDictionary encodeWithCoder:] unsupported coder class {:?}",

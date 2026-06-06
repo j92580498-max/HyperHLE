@@ -8,6 +8,7 @@
 //! According to Apple's docs, it's not toll-free bridged to `NSUserDefaults`,
 //! but we are still implementing one atop of another.
 
+use super::cf_array::CFArrayRef;
 use super::cf_string::CFStringRef;
 use super::CFTypeRef;
 use crate::dyld::{export_c_func, ConstantExports, FunctionExports, HostConstant};
@@ -46,6 +47,19 @@ fn app_id_is_current(env: &mut Environment, app_id: CFStringRef) -> bool {
     if app_id_str == bundle_id {
         return true;
     }
+    
+    // NEW: Reverse-DNS prefix matching for shortened bundle IDs
+    // e.g. "com.popcap.pvz" should match "com.popcap.ios.chs.PvZGreatWall"
+    let app_parts: Vec<&str> = app_id_str.split('.').collect();
+    let bundle_parts: Vec<&str> = bundle_id.split('.').collect();
+    if app_parts.len() >= 2 && bundle_parts.len() >= 2 {
+        let app_prefix = app_parts[..app_parts.len().min(3)].join(".");
+        let bundle_prefix = bundle_parts[..bundle_parts.len().min(3)].join(".");
+        if app_prefix == bundle_prefix && bundle_id.starts_with(&app_prefix) {
+            return true;
+        }
+    }
+    
     log!(
         "Warning: CFPreferences called with applicationID {:?}, which is \
          neither kCFPreferencesCurrentApplication nor this app's bundle id \
@@ -83,6 +97,84 @@ fn CFPreferencesSetAppValue(
 }
 
 fn CFPreferencesAppSynchronize(env: &mut Environment, app_id: CFStringRef) -> bool {
+    let _ = app_id_is_current(env, app_id);
+    let user_defaults: id = msg_class![env; NSUserDefaults standardUserDefaults];
+    msg![env; user_defaults synchronize]
+}
+
+/// `CFPreferencesCopyKeyList(applicationID, userName, hostName) -> CFArrayRef`
+///
+/// Apple docs: Constructs and returns the list of all keys set in the given
+/// location. In a sandboxed iOS app only the current-application domain is
+/// accessible, so we route this to `NSUserDefaults` regardless of the
+/// `userName`/`hostName` arguments (which are always one of the sentinel
+/// constants on iOS anyway).
+///
+/// Returns NULL if the domain has no keys; the caller is responsible for
+/// releasing the returned array.
+fn CFPreferencesCopyKeyList(
+    env: &mut Environment,
+    app_id: CFStringRef,
+    _user_name: CFStringRef,
+    _host_name: CFStringRef,
+) -> CFArrayRef {
+    let _ = app_id_is_current(env, app_id);
+    let user_defaults: id = msg_class![env; NSUserDefaults standardUserDefaults];
+    // dictionaryRepresentation merges all domains (registration, global, app).
+    // allKeys on the resulting dictionary gives us every set key.
+    let dict: id = msg![env; user_defaults dictionaryRepresentation];
+    if dict == nil {
+        return nil;
+    }
+    let keys: id = msg![env; dict allKeys];
+    if keys == nil {
+        return nil;
+    }
+    // Return an autoreleased copy so the caller owns a retained ref after
+    // an explicit CFRetain, matching real CoreFoundation Copy semantics.
+    let count: i32 = msg![env; keys count];
+    if count == 0 {
+        return nil;
+    }
+    msg![env; keys copy]
+}
+
+/// `CFPreferencesSetValue(key, value, applicationID, userName, hostName)`
+///
+/// Apple docs: The primitive set function — adds, modifies, or removes a
+/// preference value for the specified domain.  If `value` is NULL the key
+/// is removed.  On iOS the only writable domain is the current-application /
+/// current-user / any-host combination, so we route all writes to
+/// `NSUserDefaults` the same way `CFPreferencesSetAppValue` does.
+fn CFPreferencesSetValue(
+    env: &mut Environment,
+    key: CFStringRef,
+    value: CFPropertyListRef,
+    app_id: CFStringRef,
+    _user_name: CFStringRef,
+    _host_name: CFStringRef,
+) {
+    let _ = app_id_is_current(env, app_id);
+    let user_defaults: id = msg_class![env; NSUserDefaults standardUserDefaults];
+    if value.is_null() {
+        let _: () = msg![env; user_defaults removeObjectForKey:key];
+        return;
+    }
+    msg![env; user_defaults setObject:value forKey:key]
+}
+
+/// `CFPreferencesSynchronize(applicationID, userName, hostName) -> Boolean`
+///
+/// Apple docs: For the specified domain, writes all pending changes to
+/// permanent storage and reads the latest preference data from permanent
+/// storage.  We route to `NSUserDefaults synchronize` which already does
+/// this for the current app.
+fn CFPreferencesSynchronize(
+    env: &mut Environment,
+    app_id: CFStringRef,
+    _user_name: CFStringRef,
+    _host_name: CFStringRef,
+) -> bool {
     let _ = app_id_is_current(env, app_id);
     let user_defaults: id = msg_class![env; NSUserDefaults standardUserDefaults];
     msg![env; user_defaults synchronize]
@@ -126,4 +218,7 @@ pub const FUNCTIONS: FunctionExports = &[
     export_c_func!(CFPreferencesCopyAppValue(_, _)),
     export_c_func!(CFPreferencesSetAppValue(_, _, _)),
     export_c_func!(CFPreferencesAppSynchronize(_)),
+    export_c_func!(CFPreferencesCopyKeyList(_, _, _)),
+    export_c_func!(CFPreferencesSetValue(_, _, _, _, _)),
+    export_c_func!(CFPreferencesSynchronize(_, _, _)),
 ];

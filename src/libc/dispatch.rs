@@ -666,6 +666,17 @@ fn dispatch_main(_env: &mut Environment) {
     // Cannot spin forever here since GuestRet requires (). Just return.
 }
 
+/// `void dispatch_debug(dispatch_object_t object, const char *message, ...)`
+///
+/// Per Apple docs: "Programmatically logs debug information about a dispatch
+/// object." This is a debugging aid that apps rarely call in production,
+/// but some Unity-based games (Frontline Commando 2) reference it. Since
+/// we don't have real dispatch object internals to inspect, we simply no-op.
+fn dispatch_debug(_env: &mut Environment, _object: MutVoidPtr, _message: ConstVoidPtr) {
+    // No-op. The message is a printf-style format string with varargs that
+    // we intentionally ignore.
+}
+
 // MARK: - Helpers
 
 /// Invoke a GCD block (`void (^)(void)`).
@@ -754,4 +765,6 @@ pub const FUNCTIONS: FunctionExports = &[
     export_c_func!(dispatch_set_target_queue(_, _)),
     // main
     export_c_func!(dispatch_main()),
+    // debug
+    export_c_func!(dispatch_debug(_, _)),
 ];

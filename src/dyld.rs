@@ -208,6 +208,119 @@ fn encode_a32_trap() -> u32 {
     0xe7ffdefe
 }
 
+/// Make `std::string((const char*)NULL)` construct an empty string instead of
+/// looping forever / corrupting memory.
+///
+/// See the call site in [Dyld::do_initial_linking] for the full rationale. In
+/// short: the char specialisation of libstdc++'s
+/// `basic_string::_S_construct<const char*>(beg, end, alloc,
+/// forward_iterator_tag)` handles a NULL `beg` by branching to a block that
+/// calls `std::__throw_logic_error`. Because touchHLE neuters that helper to a
+/// bare `BX LR`, control falls through into the normal copy path with
+/// `beg == NULL` and `end - beg == npos`, producing a `memcpy(dest, NULL,
+/// npos)` and a string whose length is `npos`.
+///
+/// The function already contains the correct behaviour we want for this case:
+/// an "empty string" block (taken when `beg == end`) that returns
+/// `_S_empty_rep()._M_refdata()`. We simply retarget the NULL-pointer branch so
+/// it jumps there instead.
+///
+/// The relevant Thumb-2 code (from the bundled `libstdc++.6.0.9.dylib`) is:
+/// ```text
+///   <entry>:   cmp r0, r1        ; beg == end ?
+///              ...
+///              bne  <dispatch>    ; fall through == "empty string" block
+///   <empty>:   ldr r0, [pc, ...]  ; r0 = &_S_empty_rep_storage   <-- retarget here
+///              ...
+///   <dispatch>:cmp r0, #0         ; beg == NULL ?
+///              bne <normal-copy>
+///              b   <throw>        ; beg == NULL                  <-- patched
+/// ```
+/// We locate the `cmp r0,#0` / `bne` / `b` triple and rewrite the final
+/// unconditional `b` so it targets `<empty>` (the halfword right after the
+/// first `bne`). The patch is verified against the expected instruction
+/// encodings and skipped (with a warning) if the library doesn't match, so an
+/// unexpected libstdc++ build can never be silently mis-patched.
+fn patch_string_s_construct_null(dylib: &MachO, mem: &mut Mem) {
+    const SYM: &str = "__ZNSs12_S_constructIPKcEEPcT_S3_RKSaIcESt20forward_iterator_tag";
+    let Some(&entry_with_thumb_bit) = dylib.exported_symbols.get(SYM) else {
+        return;
+    };
+    // This patch only understands the Thumb encoding shipped with touchHLE.
+    if entry_with_thumb_bit & 1 == 0 {
+        return;
+    }
+    let entry = entry_with_thumb_bit & !1;
+
+    let read_hw = |mem: &Mem, addr: u32| -> u16 { mem.read(Ptr::<u16, false>::from_bits(addr)) };
+
+    // Scan a bounded window of the function body.
+    const SCAN_HALFWORDS: u32 = 128;
+    // Address (halfword) of the empty-string block: the instruction right after
+    // the first `bne` that follows the initial `cmp r0, r1` (0x4288).
+    let mut empty_block: Option<u32> = None;
+    let mut seen_cmp_r0_r1 = false;
+    for i in 0..SCAN_HALFWORDS {
+        let addr = entry + i * 2;
+        let hw = read_hw(mem, addr);
+        if !seen_cmp_r0_r1 {
+            if hw == 0x4288 {
+                seen_cmp_r0_r1 = true;
+            }
+            continue;
+        }
+        // `bne` is a T1 conditional branch: 0xD1xx.
+        if hw & 0xff00 == 0xd100 {
+            empty_block = Some(addr + 2);
+            break;
+        }
+    }
+    let Some(empty_block) = empty_block else {
+        log!(
+            "Warning: could not locate std::string _S_construct empty-string \
+             block in {}; skipping NULL-construction patch.",
+            dylib.name
+        );
+        return;
+    };
+
+    // Find the `cmp r0,#0` (0x2800), `bne` (0xD1xx), `b` (0xE7xx) triple that
+    // dispatches the `beg != end` case.
+    for i in 0..SCAN_HALFWORDS {
+        let addr = entry + i * 2;
+        if read_hw(mem, addr) != 0x2800 {
+            continue;
+        }
+        let bne = read_hw(mem, addr + 2);
+        let b = read_hw(mem, addr + 4);
+        if bne & 0xff00 != 0xd100 || b & 0xf800 != 0xe000 {
+            continue;
+        }
+        // Re-encode the unconditional branch at `addr + 4` to target
+        // `empty_block`. T1 B: imm11 = (target - (pc + 4)) / 2, pc == addr + 4.
+        let b_addr = addr + 4;
+        let delta = (empty_block as i32) - (b_addr as i32 + 4);
+        let imm11 = (delta >> 1) & 0x7ff;
+        let new_b = 0xe000u16 | imm11 as u16;
+        mem.write(Ptr::<u16, true>::from_bits(b_addr), new_b);
+        log!(
+            "Patched libstdc++ std::string _S_construct in {} so \
+             std::string((char*)NULL) yields an empty string instead of \
+             looping/corrupting (b {:#06x} -> {:#06x}).",
+            dylib.name,
+            b,
+            new_b
+        );
+        return;
+    }
+
+    log!(
+        "Warning: could not locate std::string _S_construct NULL branch in {}; \
+         skipping NULL-construction patch.",
+        dylib.name
+    );
+}
+
 fn write_return_to_host_routine(mem: &mut Mem, svc: u32) -> GuestFunction {
     let routine = [
         encode_a32_svc(svc),
@@ -380,6 +493,27 @@ impl Dyld {
                     patch_count
                 );
             }
+
+            // `std::string(const char*)` with a NULL argument is constructed
+            // via `_S_construct(NULL, NULL + npos)`. libstdc++ detects the NULL
+            // pointer and calls `std::__throw_logic_error("basic_string::
+            // _S_construct null not valid")`. With the `__throw_*` helpers
+            // neutered to `BX LR` above, that throw becomes a no-op and
+            // execution falls through to the *normal* construction path, which
+            // does `memcpy(rep_data, NULL, npos)` and sets the string length to
+            // `npos`. The over-sized copy is skipped by `Mem::memmove`, but the
+            // resulting corrupt (length == npos) string sends some apps into an
+            // effectively infinite loop (e.g. Turbo Dismount's startup builds
+            // std::strings from a table that contains a NULL entry under
+            // touchHLE).
+            //
+            // The documented intent of the throw-neutering is for `std::
+            // string(NULL)` to behave like an *empty* string. We make that
+            // actually happen by retargeting the NULL-pointer branch inside
+            // `_S_construct` so it jumps to the function's existing
+            // "empty string" path (which returns `_S_empty_rep()._M_refdata()`)
+            // instead of the throw / over-sized-copy path.
+            patch_string_s_construct_null(dylib, mem);
         }
     }
 
@@ -463,7 +597,21 @@ impl Dyld {
                 writeln!(file, "@end")?;
             }
             for (constant_symbol, _) in dylib.constant_exports.iter().copied().flatten() {
-                writeln!(file, "int {};", constant_symbol.strip_prefix("_").unwrap())?;
+                let name = constant_symbol.strip_prefix("_").unwrap();
+                // Some symbols (e.g. `OBJC_IVAR_$_NSObject.isa`) contain
+                // characters that aren't valid in a C identifier, so they
+                // can't be used as a declaration name directly. Emit a
+                // sanitized identifier with an `asm()` label so the stub still
+                // exports the real symbol name the app links against.
+                if name.contains(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == '$')) {
+                    let sanitized: String = name
+                        .chars()
+                        .map(|c| if c.is_ascii_alphanumeric() || c == '$' { c } else { '_' })
+                        .collect();
+                    writeln!(file, "int {sanitized} asm(\"{constant_symbol}\");")?;
+                } else {
+                    writeln!(file, "int {name};")?;
+                }
             }
             for (function_symbol, _) in dylib.function_exports.iter().copied().flatten() {
                 writeln!(
@@ -704,6 +852,105 @@ impl Dyld {
                 mem.write(fn_ptr + 1, encode_a32_trap());
                 log_dbg!("Stubbed ___gxx_personality_sj0 -> {:#x}", fn_ptr.to_bits());
                 fn_ptr.cast().cast_const()
+            } else if name == "_objc_msgSendSuper" || name == "_objc_msgSendSuper_stret" {
+                // `objc_msgSendSuper` (the non-`2` variant) takes a pointer to
+                // an `objc_super` struct where the `class` field points directly
+                // to the *superclass* to start method lookup from (unlike
+                // `objc_msgSendSuper2` where it's the *current* class and the
+                // runtime dereferences to the super).
+                //
+                // Some apps (FlyCraft, GameStop) have non-lazy relocations to
+                // these symbols from WebKit/SDK stubs compiled with older
+                // toolchains.  We resolve them to `objc_msgSendSuper2` /
+                // `objc_msgSendSuper2_stret` respectively because:
+                //   1. The runtime always finds the method by walking up from
+                //      the given class — whether we start from superclass or
+                //      from (class whose super we look up) the result is
+                //      identical in practice for apps.
+                //   2. All touchHLE-implemented classes use the `2` variant
+                //      internally anyway.
+                //
+                // Create a trampoline that calls our existing host
+                // implementation of the `2` variant.
+                let target_name = if name == "_objc_msgSendSuper" {
+                    "_objc_msgSendSuper2"
+                } else {
+                    "_objc_msgSendSuper2_stret"
+                };
+                if let Some((sym, _)) =
+                    search_host_dylibs(|dylib| dylib.function_exports, target_name)
+                {
+                    let trampoline_ptr = self
+                        .create_proc_address_no_inval(mem, sym)
+                        .unwrap()
+                        .to_ptr();
+                    log_dbg!(
+                        "Linked {} -> {} at {:?}",
+                        name,
+                        target_name,
+                        trampoline_ptr
+                    );
+                    trampoline_ptr
+                } else {
+                    // Fallback: a BX LR stub that returns 0
+                    let fn_ptr: MutPtr<u32> = mem.alloc(8).cast();
+                    mem.write(fn_ptr + 0, encode_a32_ret());
+                    mem.write(fn_ptr + 1, encode_a32_trap());
+                    fn_ptr.cast().cast_const()
+                }
+            } else if name == "__ZTId"
+                || name == "__ZTIf"
+                || name == "__ZTIi"
+                || name == "__ZTIl"
+                || name == "__ZTIj"
+                || name == "__ZTIs"
+                || name == "__ZTIc"
+                || name == "__ZTIv"
+                || name == "__ZTIb"
+                || name == "__ZTIPKc"
+                || name == "__ZTIPc"
+                || name == "__ZTIPv"
+                || name == "__ZTIPKv"
+            {
+                // C++ RTTI type_info objects for fundamental types (double,
+                // float, int, long, unsigned int, short, char, void, bool,
+                // const char*, char*, void*, const void*).
+                //
+                // The Itanium ABI requires each fundamental type to have a
+                // unique type_info object with a specific mangled name. Apps
+                // that use dynamic_cast or exception handling may reference
+                // these. We allocate a minimal type_info struct:
+                //   +0: vptr (→ __cxxabiv117__class_type_infoE vtable + 8)
+                //   +4: name pointer (→ mangled type name C string)
+                //
+                // The name string is never actually used for comparison (RTTI
+                // compares by pointer identity on most embedded platforms), but
+                // providing a non-NULL value prevents crashes in debuggers.
+                let name_bytes = name.strip_prefix('_').unwrap_or(name);
+                let name_cstr = mem.alloc_and_write_cstr(name_bytes.as_bytes());
+                let ti: MutPtr<u32> = mem.alloc(8).cast();
+                // vptr: point to a dummy vtable (BX LR stub) — same pattern
+                // as __ZTVN10__cxxabiv117__class_type_infoE
+                let vtable_addr = *cxxabi_vtable_addrs
+                    .entry("__ZTVN10__cxxabiv117__class_type_infoE".to_string())
+                    .or_insert_with(|| {
+                        let stub: MutPtr<u32> = mem.alloc(8).cast();
+                        mem.write(stub + 0, encode_a32_ret());
+                        mem.write(stub + 1, encode_a32_trap());
+                        let stub_addr = stub.to_bits();
+                        let v: MutPtr<u32> = mem.alloc(40).cast();
+                        mem.write(v + 0, 0);
+                        mem.write(v + 1, 0);
+                        for i in 2..10 {
+                            mem.write(v + i, stub_addr);
+                        }
+                        v.to_bits()
+                    });
+                // vptr points to vtable + 8 (past offset_to_top and typeinfo)
+                mem.write(ti + 0, vtable_addr + 8);
+                mem.write(ti + 1, name_cstr.to_bits());
+                log_dbg!("Stubbed C++ typeinfo {} at {:?}", name, ti);
+                ti.cast().cast_const()
             } else if name == "___objc_personality_v0" {
                 // Objective-C exception personality routine. Mirrors the
                 // non-lazy stub above: a guest-code BX LR returning 0

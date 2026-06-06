@@ -41,6 +41,16 @@ pub(super) enum NSValueHostObject {
     NSRange(NSRange),
     CATransform3D(CATransform3D),
 }
+impl Default for NSValueHostObject {
+    // Phantom-fallback value; an empty `NSRange` is the closest "no info"
+    // shape, since it doesn't reference any guest memory.
+    fn default() -> Self {
+        NSValueHostObject::NSRange(NSRange {
+            location: 0,
+            length: 0,
+        })
+    }
+}
 impl HostObject for NSValueHostObject {}
 
 macro_rules! impl_AsValue {
@@ -75,6 +85,15 @@ pub(super) enum NSNumberHostObject {
     Short(i16),
     UnsignedShort(u16),
     Char(i8),
+}
+impl Default for NSNumberHostObject {
+    // Used only as the phantom-fallback value when the objc runtime is asked
+    // to `borrow`/`borrow_mut` a missing/wrong-typed object. Choosing
+    // `Int(0)` matches the bridged Cocoa convention that a fresh NSNumber
+    // with no specified type behaves like a zero integer.
+    fn default() -> Self {
+        NSNumberHostObject::Int(0)
+    }
 }
 impl HostObject for NSNumberHostObject {}
 

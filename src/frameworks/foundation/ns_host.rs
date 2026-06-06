@@ -12,6 +12,7 @@
 use crate::frameworks::foundation::ns_string;
 use crate::objc::{autorelease, id, msg, msg_class, objc_classes, ClassExports, HostObject, NSZonePtr};
 
+#[derive(Default)]
 struct NSHostHostObject {
     name: id,
     address: id,

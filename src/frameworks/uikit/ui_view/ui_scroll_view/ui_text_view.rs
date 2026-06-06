@@ -45,6 +45,7 @@ pub struct UITextViewHostObject {
     keyboard_appearance: NSInteger,
     autocapitalization_type: NSInteger,
     autocorrection_type: NSInteger,
+    secure_text_entry: bool,
     data_detector_types: NSUInteger,
     /// Per Apple's
     /// <https://developer.apple.com/documentation/uikit/uiresponder/1621119-inputaccessoryview>
@@ -73,6 +74,7 @@ impl Default for UITextViewHostObject {
             keyboard_appearance: 0,
             autocapitalization_type: 0,
             autocorrection_type: 0,
+            secure_text_entry: false,
             data_detector_types: 0,
             input_accessory_view: nil,
             input_view: nil,
@@ -277,6 +279,14 @@ pub const CLASSES: ClassExports = objc_classes! {
 }
 - (())setAutocorrectionType:(UITextAutocorrectionType)type_ {
     env.objc.borrow_mut::<UITextViewHostObject>(this).autocorrection_type = type_;
+}
+// Apple docs: https://developer.apple.com/documentation/uikit/uitextinputtraits/1624427-issecuretextentry
+// Identifies whether the text object should hide the text being entered.
+- (bool)isSecureTextEntry {
+    env.objc.borrow::<UITextViewHostObject>(this).secure_text_entry
+}
+- (())setSecureTextEntry:(bool)secure {
+    env.objc.borrow_mut::<UITextViewHostObject>(this).secure_text_entry = secure;
 }
 - (UIDataDetectorTypes)dataDetectorTypes {
     env.objc.borrow::<UITextViewHostObject>(this).data_detector_types

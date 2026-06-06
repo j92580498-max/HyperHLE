@@ -20,6 +20,7 @@ pub const UIAlertViewStyleSecureTextInput: UIAlertViewStyle = 1;
 pub const UIAlertViewStylePlainTextInput: UIAlertViewStyle = 2;
 pub const UIAlertViewStyleLoginAndPasswordInput: UIAlertViewStyle = 3;
 
+#[derive(Default)]
 pub struct UIAlertViewHostObject {
     title: id,
     message: id,
@@ -222,12 +223,38 @@ pub const CLASSES: ClassExports = objc_classes! {
         (h.title, h.message, h.button_titles, h.cancel_button_index)
     };
 
-    let title_str: String = if title != nil {
+    // Raw (un-substituted) strings, used to decide whether the alert
+    // actually has anything to show the user.
+    let raw_title: String = if title != nil {
         ns_string::to_rust_string(env, title).into_owned()
-    } else { "Alert".into() };
-    let message_str: String = if message != nil {
+    } else { String::new() };
+    let raw_message: String = if message != nil {
         ns_string::to_rust_string(env, message).into_owned()
-    } else { "".into() };
+    } else { String::new() };
+
+    // touchHLE renders UIAlertView as a *blocking* SDL2 system dialog,
+    // whereas real iOS `-[UIAlertView show]` is asynchronous and returns
+    // immediately. Some apps (notably Outfit7 titles like Talking Angela)
+    // create a content-less alert — empty/`nil` title *and* message — as a
+    // transient placeholder that they dismiss programmatically once some
+    // background work finishes. Presenting a blocking modal for such an
+    // alert freezes the app behind an empty dialog box that the user can
+    // never meaningfully act on. Since there is nothing to display, skip
+    // the native dialog and simulate an immediate dismissal so the guest's
+    // run loop keeps going (matching iOS's non-blocking semantics). Any
+    // delegate callbacks are still delivered via dismissWithClickedButtonIndex.
+    if raw_title.trim().is_empty() && raw_message.trim().is_empty() {
+        log!(
+            "UIAlertView show: empty title and message; \
+             skipping blocking SDL2 dialog and dismissing asynchronously"
+        );
+        let dismiss_index = if cancel_index >= 0 { cancel_index } else { 0 };
+        let _: () = msg![env; this dismissWithClickedButtonIndex:dismiss_index animated:false];
+        return;
+    }
+
+    let title_str: String = if raw_title.is_empty() { "Alert".into() } else { raw_title };
+    let message_str: String = raw_message;
 
     let btn_count: NSUInteger = msg![env; buttons count];
     let mut btn_strings: Vec<String> = Vec::new();

@@ -595,6 +595,444 @@ fn vImageCopyBuffer(
     KV_IMAGE_NO_ERROR
 }
 
+// ===========================================================================
+// MARK: - vDSP additional vector operations
+// ===========================================================================
+
+/// `vDSP_dotpr` — dot product of two vectors (single-precision).
+/// Apple docs: Calculates the dot product of vectors A and B.
+/// C = sum(A[i*strideA] * B[i*strideB]) for i in 0..n
+/// Reference: https://developer.apple.com/documentation/accelerate/1450392-vdsp_dotpr
+fn vDSP_dotpr(
+    env: &mut Environment,
+    input_a: ConstPtr<f32>,
+    stride_a: vDSP_Length,
+    input_b: ConstPtr<f32>,
+    stride_b: vDSP_Length,
+    output: MutPtr<f32>,
+    n: vDSP_Length,
+) {
+    let sa = stride_a.max(1) as GuestUSize;
+    let sb = stride_b.max(1) as GuestUSize;
+    let mut sum: f32 = 0.0;
+    for i in 0..(n as GuestUSize) {
+        let a: f32 = env.mem.read((input_a + i * sa).cast());
+        let b: f32 = env.mem.read((input_b + i * sb).cast());
+        sum += a * b;
+    }
+    env.mem.write(output, sum);
+}
+
+/// `vDSP_vsdiv` — vector scalar divide (single-precision).
+/// C[i] = A[i*strideA] / B, for i in 0..n
+/// Reference: https://developer.apple.com/documentation/accelerate/1450156-vdsp_vsdiv
+fn vDSP_vsdiv(
+    env: &mut Environment,
+    input: ConstPtr<f32>,
+    stride_a: vDSP_Length,
+    scalar: ConstPtr<f32>,
+    output: MutPtr<f32>,
+    stride_c: vDSP_Length,
+    n: vDSP_Length,
+) {
+    let s: f32 = env.mem.read(scalar);
+    let sa = stride_a.max(1) as GuestUSize;
+    let sc = stride_c.max(1) as GuestUSize;
+    if s == 0.0 {
+        // Division by zero: Apple's vDSP produces ±inf/NaN per IEEE 754
+        for i in 0..(n as GuestUSize) {
+            let val: f32 = env.mem.read((input + i * sa).cast());
+            env.mem.write((output + i * sc).cast(), val / s);
+        }
+    } else {
+        for i in 0..(n as GuestUSize) {
+            let val: f32 = env.mem.read((input + i * sa).cast());
+            env.mem.write((output + i * sc).cast(), val / s);
+        }
+    }
+}
+
+/// `vDSP_vsub` — vector subtract (single-precision).
+/// **Important**: Apple's vDSP_vsub is C[i] = B[i] - A[i] (NOT A-B!)
+/// Reference: https://developer.apple.com/documentation/accelerate/1450250-vdsp_vsub
+fn vDSP_vsub(
+    env: &mut Environment,
+    input_a: ConstPtr<f32>,
+    stride_a: vDSP_Length,
+    input_b: ConstPtr<f32>,
+    stride_b: vDSP_Length,
+    output: MutPtr<f32>,
+    stride_c: vDSP_Length,
+    n: vDSP_Length,
+) {
+    let sa = stride_a.max(1) as GuestUSize;
+    let sb = stride_b.max(1) as GuestUSize;
+    let sc = stride_c.max(1) as GuestUSize;
+    for i in 0..(n as GuestUSize) {
+        let a: f32 = env.mem.read((input_a + i * sa).cast());
+        let b: f32 = env.mem.read((input_b + i * sb).cast());
+        env.mem.write((output + i * sc).cast(), b - a);
+    }
+}
+
+/// `vDSP_vmax` — element-wise maximum of two vectors (single-precision).
+/// C[i] = max(A[i], B[i])
+/// Reference: https://developer.apple.com/documentation/accelerate/1450032-vdsp_vmax
+#[allow(non_snake_case)]
+fn vDSP_vmax(
+    env: &mut Environment,
+    input_a: ConstPtr<f32>,
+    stride_a: vDSP_Length,
+    input_b: ConstPtr<f32>,
+    stride_b: vDSP_Length,
+    output: MutPtr<f32>,
+    stride_c: vDSP_Length,
+    n: vDSP_Length,
+) {
+    let sa = stride_a.max(1) as GuestUSize;
+    let sb = stride_b.max(1) as GuestUSize;
+    let sc = stride_c.max(1) as GuestUSize;
+    for i in 0..(n as GuestUSize) {
+        let a: f32 = env.mem.read((input_a + i * sa).cast());
+        let b: f32 = env.mem.read((input_b + i * sb).cast());
+        env.mem.write((output + i * sc).cast(), a.max(b));
+    }
+}
+
+/// `vDSP_vmin` — element-wise minimum of two vectors (single-precision).
+/// C[i] = min(A[i], B[i])
+/// Reference: https://developer.apple.com/documentation/accelerate/1449984-vdsp_vmin
+#[allow(non_snake_case)]
+fn vDSP_vmin(
+    env: &mut Environment,
+    input_a: ConstPtr<f32>,
+    stride_a: vDSP_Length,
+    input_b: ConstPtr<f32>,
+    stride_b: vDSP_Length,
+    output: MutPtr<f32>,
+    stride_c: vDSP_Length,
+    n: vDSP_Length,
+) {
+    let sa = stride_a.max(1) as GuestUSize;
+    let sb = stride_b.max(1) as GuestUSize;
+    let sc = stride_c.max(1) as GuestUSize;
+    for i in 0..(n as GuestUSize) {
+        let a: f32 = env.mem.read((input_a + i * sa).cast());
+        let b: f32 = env.mem.read((input_b + i * sb).cast());
+        env.mem.write((output + i * sc).cast(), a.min(b));
+    }
+}
+
+/// `vDSP_sve` — sum of vector elements (single-precision).
+/// Reference: https://developer.apple.com/documentation/accelerate/1450236-vdsp_sve
+fn vDSP_sve(
+    env: &mut Environment,
+    input: ConstPtr<f32>,
+    stride: vDSP_Length,
+    output: MutPtr<f32>,
+    n: vDSP_Length,
+) {
+    let s = stride.max(1) as GuestUSize;
+    let mut sum: f32 = 0.0;
+    for i in 0..(n as GuestUSize) {
+        let val: f32 = env.mem.read((input + i * s).cast());
+        sum += val;
+    }
+    env.mem.write(output, sum);
+}
+
+/// `vDSP_normalize` — normalize a vector (subtract mean, divide by std dev).
+/// Reference: https://developer.apple.com/documentation/accelerate/1450668-vdsp_normalize
+fn vDSP_normalize(
+    env: &mut Environment,
+    input: ConstPtr<f32>,
+    stride_a: vDSP_Length,
+    output: MutPtr<f32>,
+    stride_c: vDSP_Length,
+    mean_out: MutPtr<f32>,
+    std_dev_out: MutPtr<f32>,
+    n: vDSP_Length,
+) {
+    if n == 0 {
+        return;
+    }
+    let sa = stride_a.max(1) as GuestUSize;
+    let sc = stride_c.max(1) as GuestUSize;
+    let nf = n as f32;
+
+    // Compute mean
+    let mut sum: f32 = 0.0;
+    for i in 0..(n as GuestUSize) {
+        let val: f32 = env.mem.read((input + i * sa).cast());
+        sum += val;
+    }
+    let mean = sum / nf;
+
+    // Compute standard deviation
+    let mut sum_sq: f32 = 0.0;
+    for i in 0..(n as GuestUSize) {
+        let v: f32 = env.mem.read((input + i * sa).cast());
+        let d = v - mean;
+        sum_sq += d * d;
+    }
+    let std_dev = (sum_sq / nf).sqrt();
+
+    // Write output if not null
+    if !output.is_null() && std_dev > 0.0 {
+        for i in 0..(n as GuestUSize) {
+            let v: f32 = env.mem.read((input + i * sa).cast());
+            env.mem.write((output + i * sc).cast(), (v - mean) / std_dev);
+        }
+    }
+    if !mean_out.is_null() {
+        env.mem.write(mean_out, mean);
+    }
+    if !std_dev_out.is_null() {
+        env.mem.write(std_dev_out, std_dev);
+    }
+}
+
+/// `vDSP_vabs` — absolute value of vector elements (single-precision).
+/// Reference: https://developer.apple.com/documentation/accelerate/1450407-vdsp_vabs
+fn vDSP_vabs(
+    env: &mut Environment,
+    input: ConstPtr<f32>,
+    stride_a: vDSP_Length,
+    output: MutPtr<f32>,
+    stride_c: vDSP_Length,
+    n: vDSP_Length,
+) {
+    let sa = stride_a.max(1) as GuestUSize;
+    let sc = stride_c.max(1) as GuestUSize;
+    for i in 0..(n as GuestUSize) {
+        let val: f32 = env.mem.read((input + i * sa).cast());
+        env.mem.write((output + i * sc).cast(), val.abs());
+    }
+}
+
+/// `vDSP_vneg` — negate vector elements (single-precision).
+/// Reference: https://developer.apple.com/documentation/accelerate/1450042-vdsp_vneg
+fn vDSP_vneg(
+    env: &mut Environment,
+    input: ConstPtr<f32>,
+    stride_a: vDSP_Length,
+    output: MutPtr<f32>,
+    stride_c: vDSP_Length,
+    n: vDSP_Length,
+) {
+    let sa = stride_a.max(1) as GuestUSize;
+    let sc = stride_c.max(1) as GuestUSize;
+    for i in 0..(n as GuestUSize) {
+        let val: f32 = env.mem.read((input + i * sa).cast());
+        env.mem.write((output + i * sc).cast(), -val);
+    }
+}
+
+/// `vDSP_vsadd` — vector scalar add (single-precision).
+/// C[i] = A[i] + B
+/// Reference: https://developer.apple.com/documentation/accelerate/1450060-vdsp_vsadd
+fn vDSP_vsadd(
+    env: &mut Environment,
+    input: ConstPtr<f32>,
+    stride_a: vDSP_Length,
+    scalar: ConstPtr<f32>,
+    output: MutPtr<f32>,
+    stride_c: vDSP_Length,
+    n: vDSP_Length,
+) {
+    let s: f32 = env.mem.read(scalar);
+    let sa = stride_a.max(1) as GuestUSize;
+    let sc = stride_c.max(1) as GuestUSize;
+    for i in 0..(n as GuestUSize) {
+        let val: f32 = env.mem.read((input + i * sa).cast());
+        env.mem.write((output + i * sc).cast(), val + s);
+    }
+}
+
+/// `vDSP_vma` — vector multiply-add. D[i] = A[i]*B[i] + C[i]
+/// Reference: https://developer.apple.com/documentation/accelerate/1450096-vdsp_vma
+fn vDSP_vma(
+    env: &mut Environment,
+    input_a: ConstPtr<f32>,
+    stride_a: vDSP_Length,
+    input_b: ConstPtr<f32>,
+    stride_b: vDSP_Length,
+    input_c: ConstPtr<f32>,
+    stride_c: vDSP_Length,
+    output: MutPtr<f32>,
+    stride_d: vDSP_Length,
+    n: vDSP_Length,
+) {
+    let sa = stride_a.max(1) as GuestUSize;
+    let sb = stride_b.max(1) as GuestUSize;
+    let sc = stride_c.max(1) as GuestUSize;
+    let sd = stride_d.max(1) as GuestUSize;
+    for i in 0..(n as GuestUSize) {
+        let a: f32 = env.mem.read((input_a + i * sa).cast());
+        let b: f32 = env.mem.read((input_b + i * sb).cast());
+        let c: f32 = env.mem.read((input_c + i * sc).cast());
+        env.mem.write((output + i * sd).cast(), a * b + c);
+    }
+}
+
+// ===========================================================================
+// MARK: - BLAS (Basic Linear Algebra Subprograms)
+// ===========================================================================
+
+/// `cblas_saxpy` — Y = alpha*X + Y (single-precision).
+/// Reference: https://developer.apple.com/documentation/accelerate/1513065-cblas_saxpy
+fn cblas_saxpy(
+    env: &mut Environment,
+    n: i32,
+    alpha: f32,
+    x: ConstPtr<f32>,
+    inc_x: i32,
+    y: MutPtr<f32>,
+    inc_y: i32,
+) {
+    if n <= 0 {
+        return;
+    }
+    let inc_x = inc_x as GuestUSize;
+    let inc_y = inc_y as GuestUSize;
+    for i in 0..(n as GuestUSize) {
+        let xi: f32 = env.mem.read((x + i * inc_x).cast());
+        let yi: f32 = env.mem.read((y + i * inc_y).cast());
+        env.mem.write((y + i * inc_y).cast(), yi + alpha * xi);
+    }
+}
+
+/// `cblas_snrm2` — Euclidean norm of vector X (single-precision).
+/// Returns sqrt(sum(X[i]^2))
+/// Reference: https://developer.apple.com/documentation/accelerate/1513280-cblas_snrm2
+fn cblas_snrm2(
+    env: &mut Environment,
+    n: i32,
+    x: ConstPtr<f32>,
+    inc_x: i32,
+) -> f32 {
+    if n <= 0 {
+        return 0.0;
+    }
+    let inc_x = inc_x as GuestUSize;
+    let mut sum_sq: f32 = 0.0;
+    for i in 0..(n as GuestUSize) {
+        let xi: f32 = env.mem.read((x + i * inc_x).cast());
+        sum_sq += xi * xi;
+    }
+    sum_sq.sqrt()
+}
+
+/// `cblas_sscal` — X = alpha*X (single-precision).
+/// Reference: https://developer.apple.com/documentation/accelerate/1513178-cblas_sscal
+fn cblas_sscal(
+    env: &mut Environment,
+    n: i32,
+    alpha: f32,
+    x: MutPtr<f32>,
+    inc_x: i32,
+) {
+    if n <= 0 {
+        return;
+    }
+    let inc_x = inc_x as GuestUSize;
+    for i in 0..(n as GuestUSize) {
+        let xi: f32 = env.mem.read((x + i * inc_x).cast());
+        env.mem.write((x + i * inc_x).cast(), alpha * xi);
+    }
+}
+
+/// `cblas_sdot` — dot product of X and Y (single-precision).
+/// Returns sum(X[i] * Y[i])
+/// Reference: https://developer.apple.com/documentation/accelerate/1513264-cblas_sdot
+fn cblas_sdot(
+    env: &mut Environment,
+    n: i32,
+    x: ConstPtr<f32>,
+    inc_x: i32,
+    y: ConstPtr<f32>,
+    inc_y: i32,
+) -> f32 {
+    if n <= 0 {
+        return 0.0;
+    }
+    let inc_x = inc_x as GuestUSize;
+    let inc_y = inc_y as GuestUSize;
+    let mut dot: f32 = 0.0;
+    for i in 0..(n as GuestUSize) {
+        let xi: f32 = env.mem.read((x + i * inc_x).cast());
+        let yi: f32 = env.mem.read((y + i * inc_y).cast());
+        dot += xi * yi;
+    }
+    dot
+}
+
+/// `cblas_scopy` — copy vector X to vector Y (single-precision).
+/// Reference: https://developer.apple.com/documentation/accelerate/1513235-cblas_scopy
+fn cblas_scopy(
+    env: &mut Environment,
+    n: i32,
+    x: ConstPtr<f32>,
+    inc_x: i32,
+    y: MutPtr<f32>,
+    inc_y: i32,
+) {
+    if n <= 0 {
+        return;
+    }
+    let inc_x = inc_x as GuestUSize;
+    let inc_y = inc_y as GuestUSize;
+    for i in 0..(n as GuestUSize) {
+        let xi: f32 = env.mem.read((x + i * inc_x).cast());
+        env.mem.write((y + i * inc_y).cast(), xi);
+    }
+}
+
+/// `cblas_sgemv` — matrix-vector multiply (single-precision).
+/// y = alpha * op(A) * x + beta * y
+/// Reference: https://developer.apple.com/documentation/accelerate/1513338-cblas_sgemv
+fn cblas_sgemv(
+    env: &mut Environment,
+    _order: i32,     // CblasRowMajor=101 or CblasColMajor=102
+    trans: i32,      // CblasNoTrans=111, CblasTrans=112
+    m: i32,
+    n: i32,
+    alpha: f32,
+    a: ConstPtr<f32>,
+    lda: i32,
+    x: ConstPtr<f32>,
+    inc_x: i32,
+    beta: f32,
+    y: MutPtr<f32>,
+    inc_y: i32,
+) {
+    if m <= 0 || n <= 0 {
+        return;
+    }
+    let no_trans = trans == 111; // CblasNoTrans
+    let (rows, cols) = if no_trans { (m, n) } else { (n, m) };
+    let inc_x = inc_x as GuestUSize;
+    let inc_y = inc_y as GuestUSize;
+    let lda = lda as GuestUSize;
+
+    for i in 0..(rows as GuestUSize) {
+        // y[i] = beta * y[i] + alpha * dot(row_i_of_A, x)
+        let yi: f32 = env.mem.read((y + i * inc_y).cast());
+        let mut dot: f32 = 0.0;
+        for j in 0..(cols as GuestUSize) {
+            let a_idx = if no_trans {
+                i * lda + j
+            } else {
+                j * lda + i
+            };
+            let aij: f32 = env.mem.read((a + a_idx).cast());
+            let xj: f32 = env.mem.read((x + j * inc_x).cast());
+            dot += aij * xj;
+        }
+        env.mem.write((y + i * inc_y).cast(), beta * yi + alpha * dot);
+    }
+}
+
 pub const FUNCTIONS: FunctionExports = &[
     export_c_func!(vDSP_create_fftsetup(_, _)),
     export_c_func!(vDSP_destroy_fftsetup(_)),
@@ -615,4 +1053,23 @@ pub const FUNCTIONS: FunctionExports = &[
     export_c_func!(vDSP_vclr(_, _, _)),
     export_c_func!(vImageConvert_AnyToAny(_, _, _, _, _)),
     export_c_func!(vImageCopyBuffer(_, _, _, _)),
+    // vDSP vector operations
+    export_c_func!(vDSP_dotpr(_, _, _, _, _, _)),
+    export_c_func!(vDSP_vsdiv(_, _, _, _, _, _)),
+    export_c_func!(vDSP_vsub(_, _, _, _, _, _, _)),
+    export_c_func!(vDSP_vmax(_, _, _, _, _, _, _)),
+    export_c_func!(vDSP_vmin(_, _, _, _, _, _, _)),
+    export_c_func!(vDSP_sve(_, _, _, _)),
+    export_c_func!(vDSP_normalize(_, _, _, _, _, _, _)),
+    export_c_func!(vDSP_vabs(_, _, _, _, _)),
+    export_c_func!(vDSP_vneg(_, _, _, _, _)),
+    export_c_func!(vDSP_vsadd(_, _, _, _, _, _)),
+    export_c_func!(vDSP_vma(_, _, _, _, _, _, _, _, _)),
+    // BLAS functions
+    export_c_func!(cblas_saxpy(_, _, _, _, _, _)),
+    export_c_func!(cblas_snrm2(_, _, _)),
+    export_c_func!(cblas_sscal(_, _, _, _)),
+    export_c_func!(cblas_sdot(_, _, _, _, _)),
+    export_c_func!(cblas_scopy(_, _, _, _, _)),
+    export_c_func!(cblas_sgemv(_, _, _, _, _, _, _, _, _, _, _, _)),
 ];

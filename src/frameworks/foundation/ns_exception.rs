@@ -30,6 +30,7 @@ use crate::{export_c_func, Environment};
 // Host object
 // ---------------------------------------------------------------------------
 
+#[derive(Default)]
 struct NSExceptionHostObject {
     name: id,      // NSString*
     reason: id,    // NSString*

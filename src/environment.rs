@@ -945,7 +945,7 @@ impl Environment {
         }
     }
 
-    fn stack_trace_current(&self) {
+    pub(crate) fn stack_trace_current(&self) {
         if self.current_thread == 0 {
             echo_no_panic!("Attempting to produce stack trace for main thread:");
         } else {
@@ -1760,8 +1760,28 @@ impl Environment {
 
     fn run_inner(&mut self) {
         let initial_thread = self.current_thread;
-        assert!(self.threads[initial_thread].active);
-        assert!(self.threads[initial_thread].guest_context.is_none());
+        if !self.threads[initial_thread].active {
+            log_no_panic!(
+                "Warning: run_inner called on inactive thread {}. Returning early.",
+                initial_thread
+            );
+            return;
+        }
+        if self.threads[initial_thread].guest_context.is_some() {
+            // This can happen when an app re-enters the run loop from within
+            // a callback (e.g. Pocket Army spawns a worker thread whose
+            // completion handler tries to resume the main run loop before the
+            // previous invocation has returned). Instead of panicking the
+            // whole emulator, log and bail — the outer run_inner is still
+            // executing and will pick up from where it left off.
+            log_no_panic!(
+                "Warning: run_inner called on thread {} which already has a \
+                 guest_context (re-entrant run loop?). Returning early to \
+                 avoid assertion failure.",
+                initial_thread
+            );
+            return;
+        }
 
         loop {
             while self

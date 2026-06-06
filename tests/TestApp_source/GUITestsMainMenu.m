@@ -7,7 +7,9 @@
 #include "system_headers.h"
 
 #include "GUITestsAppDelegate.h"
+#include "GUITestsBlendModeView.h"
 #include "GUITestsCALayerTestsView.h"
+#include "GUITestsCGFontGlyphTestsView.h"
 #include "GUITestsMainMenu.h"
 
 @implementation GUITestsMainMenu : UIView
@@ -48,6 +50,24 @@ UIWindow *window2;
                 action:@selector(toggleWindow)
       forControlEvents:UIControlEventTouchUpInside];
   [self addSubview:button2];
+
+  UIButton *button3 = [UIButton buttonWithType:UIButtonTypeRoundedRect];
+  [button3 setTitle:[NSString stringWithUTF8String:"CGFont/CGGlyph tests"]
+           forState:UIControlStateNormal];
+  [button3 setFrame:CGRectMake(40, 220, 240, 40)];
+  [button3 addTarget:self
+                action:@selector(goToCGFontGlyphTests)
+      forControlEvents:UIControlEventTouchUpInside];
+  [self addSubview:button3];
+
+  UIButton *button4 = [UIButton buttonWithType:UIButtonTypeRoundedRect];
+  [button4 setTitle:[NSString stringWithUTF8String:"BlendMode tests"]
+           forState:UIControlStateNormal];
+  [button4 setFrame:CGRectMake(40, 380, 240, 40)];
+  [button4 addTarget:self
+                action:@selector(goToBlendModeTests)
+      forControlEvents:UIControlEventTouchUpInside];
+  [self addSubview:button4];
 
   return self;
 }
@@ -91,6 +111,18 @@ UIWindow *window2;
 - (void)goToCALayerTests {
   [((GUITestsAppDelegate *)[[UIApplication sharedApplication]
       delegate]) setMainView:[[[GUITestsCALayerTestsView alloc]
+                                 initWithFrame:[self frame]] autorelease]];
+}
+
+- (void)goToCGFontGlyphTests {
+  [((GUITestsAppDelegate *)[[UIApplication sharedApplication]
+      delegate]) setMainView:[[[GUITestsCGFontGlyphTestsView alloc]
+                                 initWithFrame:[self frame]] autorelease]];
+}
+
+- (void)goToBlendModeTests {
+  [((GUITestsAppDelegate *)[[UIApplication sharedApplication]
+      delegate]) setMainView:[[[GUITestsBlendModeView alloc]
                                  initWithFrame:[self frame]] autorelease]];
 }
 

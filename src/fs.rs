@@ -258,7 +258,7 @@ impl ToOwned for GuestPath {
 }
 
 /// Like [PathBuf] but for the virtual filesystem.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct GuestPathBuf(String);
 impl From<String> for GuestPathBuf {
     fn from(string: String) -> GuestPathBuf {
@@ -327,6 +327,39 @@ pub fn resolve_path<'a>(path: &'a GuestPath, relative_to: Option<&'a GuestPath>)
 
     for component in path.as_str().split('/') {
         apply_path_component(&mut components, component);
+    }
+
+    // --- Path deduplication heuristic ---
+    // Some guest apps (Triniti engine, OMH!, etc.) construct invalid paths by
+    // concatenating the Documents (or other sandbox) directory twice, e.g.:
+    //   /var/mobile/.../Documents/ + /var/mobile/.../Documents/.AudioCache...
+    // This results in a path like:
+    //   /var/mobile/.../Documents/var/mobile/.../Documents/.AudioCache...
+    // which has a repeated prefix. Detect and strip the duplication so the
+    // filesystem lookup succeeds. We look for the *home directory prefix*
+    // appearing a second time within the resolved components.
+    //
+    // Strategy: if we find the sequence ["var", "mobile", "Applications"] at
+    // any position > 0, that second occurrence marks the start of the "real"
+    // path — truncate everything before it.
+    if components.len() > 6 {
+        let marker = ["var", "mobile", "Applications"];
+        // Skip the first occurrence (position 0) and look for a second one.
+        if let Some(dup_start) = components.windows(marker.len()).position(|w| {
+            w == marker
+        }) {
+            // Check if there's a second occurrence of the same marker.
+            if let Some(second_pos) = components[dup_start + 1..].windows(marker.len()).position(|w| {
+                w == marker
+            }) {
+                let real_start = dup_start + 1 + second_pos;
+                log_dbg!(
+                    "Path deduplication: stripping duplicate prefix at component {}",
+                    real_start
+                );
+                components = components[real_start..].to_vec();
+            }
+        }
     }
 
     log_dbg!("=> {:?}", components);
@@ -463,6 +496,39 @@ impl GuestFile {
         // Due to legacy directory iteration support, directories are seekable
         // https://stackoverflow.com/questions/65911066/what-does-lseek-mean-for-a-directory-file-descriptor
         !matches!(self, GuestFile::Socket)
+    }
+
+    /// Duplicate this file descriptor, creating an independent handle that
+    /// shares the underlying kernel file description (for `GuestFile::File`)
+    /// or creates a new cursor at the same position (for IPA/resource files).
+    /// This is used to implement POSIX `dup(2)` / `fcntl(F_DUPFD)`.
+    pub fn try_clone(&self) -> std::io::Result<GuestFile> {
+        match self {
+            GuestFile::File(file) => {
+                let cloned = file.try_clone()?;
+                Ok(GuestFile::File(cloned))
+            }
+            GuestFile::IpaBundleFile(ipa_file) => {
+                // IpaFile uses Cursor<Rc<[u8]>> — clone shares the data and
+                // copies the seek position.
+                Ok(GuestFile::IpaBundleFile(ipa_file.clone()))
+            }
+            GuestFile::ResourceFile(_) => {
+                // ResourceFile wraps a host File. We cannot easily clone it
+                // without re-opening, so return an error. This is rare.
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::Unsupported,
+                    "Cannot duplicate a resource file descriptor",
+                ))
+            }
+            GuestFile::Directory => Ok(GuestFile::Directory),
+            GuestFile::Socket => {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::Unsupported,
+                    "Cannot duplicate a socket file descriptor",
+                ))
+            }
+        }
     }
 }
 

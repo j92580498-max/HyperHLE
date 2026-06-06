@@ -24,6 +24,7 @@ pub const MP_MEDIA_TYPE_VIDEO_ITunes: MPMediaType = 1 << 12;
 pub const MP_MEDIA_TYPE_ANY_VIDEO: MPMediaType = 0xff00;
 pub const MP_MEDIA_TYPE_ANY: MPMediaType = !0;
 
+#[derive(Default)]
 struct MPMediaPickerControllerHostObject {
     /// `MPMediaType` bitmask
     allowed_media_types: MPMediaType,

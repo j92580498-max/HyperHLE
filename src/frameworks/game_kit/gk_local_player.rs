@@ -131,6 +131,7 @@ impl State {
 
 // MARK: - Host object
 
+#[derive(Default)]
 struct GKLocalPlayerHostObject {
     /// `NSString*`
     player_id: id,
@@ -290,6 +291,12 @@ pub const CLASSES: ClassExports = objc_classes! {
 // documented "not authenticated" branch: emit the change-of-state
 // notification, leave `isAuthenticated == NO`, and invoke the
 // completion handler with a `GKErrorNotAuthenticated` NSError.
+//
+// Apple's documentation states that the completion handler is always
+// called on the main thread. We enforce this by temporarily switching
+// the current_thread to 0 (main) for the callback invocation, so that
+// guest code checking `[NSThread isMainThread]` inside the handler
+// gets the expected `YES`.
 - (())authenticateWithCompletionHandler:(id)completion_handler {
     let error = make_not_authenticated_error(env);
 
@@ -304,7 +311,11 @@ pub const CLASSES: ClassExports = objc_classes! {
     autorelease(env, name);
     () = msg![env; notif_center postNotificationName:name object:nil];
 
+    // Ensure the callback runs in main-thread context (thread 0).
+    let saved_thread = env.current_thread;
+    env.current_thread = 0;
     invoke_error_block(env, completion_handler, error);
+    env.current_thread = saved_thread;
 }
 
 // Apple reference (iOS 6+):
@@ -319,6 +330,9 @@ pub const CLASSES: ClassExports = objc_classes! {
 // `GKErrorNotAuthenticated` NSError. The handler block is retained
 // for the lifetime of the singleton so it survives autorelease pool
 // drains, matching what UIKit does internally.
+//
+// Apple's documentation states that the handler is always called on
+// the main thread.
 - (())setAuthenticateHandler:(id)handler {
     if handler == nil {
         return;
@@ -332,7 +346,12 @@ pub const CLASSES: ClassExports = objc_classes! {
 
     let vc: id = nil;
     let error = make_not_authenticated_error(env);
+
+    // Ensure the callback runs in main-thread context (thread 0).
+    let saved_thread = env.current_thread;
+    env.current_thread = 0;
     invoke_vc_error_block(env, retained_handler, vc, error);
+    env.current_thread = saved_thread;
 
     // Drop our reference once the handler has been invoked. Apps that
     // store the handler themselves are unaffected because Block_copy

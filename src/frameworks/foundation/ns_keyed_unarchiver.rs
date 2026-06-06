@@ -34,6 +34,7 @@ pub const CONSTANTS: ConstantExports = &[(
     HostConstant::NSString(NSKeyedArchiveRootObjectKey),
 )];
 
+#[derive(Default)]
 struct NSKeyedUnarchiverHostObject {
     plist: Dictionary,
     current_key: Option<Uid>,
@@ -422,6 +423,7 @@ fn unarchive_key(env: &mut Environment, unarchiver: id, key: Uid) -> id {
                     // while holding a reference to the class name, since it
                     // is ultimately owned by ObjC via the host object
                     let class_name = class_name.to_string();
+                    if class_name.is_empty() { eprintln!("DIAG_CALLER: ns_keyed_unarchiver classname empty"); }
                     env.objc.get_known_class(&class_name, &mut env.mem)
                 };
                 let host_obj = borrow_host_obj(env, unarchiver); // reborrow

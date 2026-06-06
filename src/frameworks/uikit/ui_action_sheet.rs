@@ -10,6 +10,7 @@ use crate::objc::{
     id, msg, msg_class, nil, objc_classes, release, retain, ClassExports, HostObject, NSZonePtr,
 };
 
+#[derive(Default)]
 struct UIActionSheetHostObject {
     delegate: id,
     title: id,

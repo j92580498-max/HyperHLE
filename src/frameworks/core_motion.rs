@@ -50,7 +50,7 @@ pub const DYLIB: HostDylib = HostDylib {
 ///   y: longitudinal (positive = up toward top of device)
 ///   z: perpendicular to screen (positive = toward user)
 /// When device is flat on table face-up: x=0, y=0, z=-1 (gravity pulling down)
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Default)]
 struct CMAcceleration {
     x: f64,
     y: f64,
@@ -58,13 +58,14 @@ struct CMAcceleration {
 }
 
 /// Per Apple docs: CMRotationRate in radians per second around each axis.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Default)]
 struct CMRotationRate {
     x: f64,
     y: f64,
     z: f64,
 }
 
+#[derive(Default)]
 struct CMMotionManagerHostObject {
     accelerometer_update_interval: f64,
     gyro_update_interval: f64,
@@ -76,23 +77,28 @@ struct CMMotionManagerHostObject {
     last_acceleration: CMAcceleration,
     /// Timestamp of last accelerometer update
     last_accel_timestamp: f64,
-    /// Reference time for computing timestamps
-    start_time: Instant,
+    /// Reference time for computing timestamps. `None` only for the phantom
+    /// fallback created via `Default::default()`; real motion managers
+    /// allocated through `+alloc` always populate this with `Instant::now()`.
+    start_time: Option<Instant>,
 }
 impl HostObject for CMMotionManagerHostObject {}
 
+#[derive(Default)]
 struct CMAccelerometerDataHostObject {
     acceleration: CMAcceleration,
     timestamp: f64,
 }
 impl HostObject for CMAccelerometerDataHostObject {}
 
+#[derive(Default)]
 struct CMGyroDataHostObject {
     rotation_rate: CMRotationRate,
     timestamp: f64,
 }
 impl HostObject for CMGyroDataHostObject {}
 
+#[derive(Default)]
 struct CMDeviceMotionHostObject {
     /// Gravity component of acceleration
     gravity: CMAcceleration,
@@ -297,7 +303,7 @@ const CLASSES: ClassExports = objc_classes! {
         device_motion_active: false,
         last_acceleration: CMAcceleration { x: 0.0, y: 0.0, z: -1.0 },
         last_accel_timestamp: 0.0,
-        start_time: Instant::now(),
+        start_time: Some(Instant::now()),
     });
     env.objc.alloc_object(this, host_object, &mut env.mem)
 }
@@ -469,7 +475,7 @@ const CLASSES: ClassExports = objc_classes! {
         .unwrap_or(CMAcceleration { x: 0.0, y: 0.0, z: -1.0 });
 
     let timestamp = env.objc.borrow::<CMMotionManagerHostObject>(this)
-        .start_time.elapsed().as_secs_f64();
+        .start_time.unwrap_or_else(std::time::Instant::now).elapsed().as_secs_f64();
 
     // Update cached value
     {
@@ -497,7 +503,7 @@ const CLASSES: ClassExports = objc_classes! {
     // No real gyroscope data available from desktop hosts.
     // Return zero rotation rate (device is stationary).
     let timestamp = env.objc.borrow::<CMMotionManagerHostObject>(this)
-        .start_time.elapsed().as_secs_f64();
+        .start_time.unwrap_or_else(std::time::Instant::now).elapsed().as_secs_f64();
 
     let data: id = msg_class![env; CMGyroData new];
     {
@@ -521,7 +527,7 @@ const CLASSES: ClassExports = objc_classes! {
     let accel = read_sdl_accelerometer(env)
         .unwrap_or(CMAcceleration { x: 0.0, y: 0.0, z: -1.0 });
     let timestamp = env.objc.borrow::<CMMotionManagerHostObject>(this)
-        .start_time.elapsed().as_secs_f64();
+        .start_time.unwrap_or_else(std::time::Instant::now).elapsed().as_secs_f64();
 
     let data: id = msg_class![env; CMDeviceMotion new];
     {

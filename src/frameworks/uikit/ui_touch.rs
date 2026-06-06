@@ -30,6 +30,7 @@ pub struct State {
     pub current_touches: HashMap<FingerId, id>,
 }
 
+#[derive(Default)]
 pub(super) struct UITouchHostObject {
     pub(super) view: id,
     pub(super) window: id,

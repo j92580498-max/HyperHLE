@@ -58,6 +58,7 @@ fn unicode_range_set(ranges: &[(u32, u32)]) -> HashSet<unichar> {
 // MARK: - Host object
 // =========================================================================
 
+#[derive(Default)]
 struct CharacterSetHostObject {
     set: HashSet<unichar>,
     inverted: bool,

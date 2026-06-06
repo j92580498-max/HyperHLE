@@ -287,6 +287,7 @@ pub const CONSTANTS: ConstantExports = &[
     ),
 ];
 
+#[derive(Default)]
 struct MPMoviePlayerControllerHostObject {
     // NSURL *
     content_url: id,
@@ -884,7 +885,28 @@ pub const CLASSES: ClassExports = objc_classes! {
     );
     // Call designated initializer of UIViewController superclass.
     let this: id = msg![env; this init];
+
+    // Per Apple docs, MPMoviePlayerViewController creates and manages its
+    // own MPMoviePlayerController. Create one and store it so the
+    // `moviePlayer` property can return it.
+    // https://developer.apple.com/documentation/mediaplayer/mpmovieplayerviewcontroller
+    let player: id = msg_class![env; MPMoviePlayerController alloc];
+    let player: id = msg![env; player initWithContentURL:url];
+    // Store as associated value via a dynamic property slot.
+    // We use setValue:forKey: with a special key.
+    let key = ns_string::get_static_str(env, "_touchHLE_moviePlayer");
+    () = msg![env; this setValue:player forKey:key];
+    release(env, player); // setValue:forKey: retains
+
     this
+}
+
+// Apple docs: "The movie player controller object used to present the movie."
+// @property(nonatomic, readonly) MPMoviePlayerController *moviePlayer
+// https://developer.apple.com/documentation/mediaplayer/mpmovieplayerviewcontroller/1619165-movieplayer
+- (id)moviePlayer {
+    let key = ns_string::get_static_str(env, "_touchHLE_moviePlayer");
+    msg![env; this valueForKey:key]
 }
 
 @end

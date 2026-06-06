@@ -11,6 +11,22 @@
 //! OpenAL Soft more often than necessary, and to improve build-time
 //! parallelism.
 
+// ============================================================
+// ИСПРАВЛЕНИЕ:
+//
+// alGetBufferi — неверная мутабельность параметра value:
+//   СТАРОЕ: pub fn alGetBufferi(buffer: ALuint, param: ALenum, value: *const ALint)
+//   НОВОЕ:  pub fn alGetBufferi(buffer: ALuint, param: ALenum, value: *mut ALint)
+//
+// OpenAL спецификация (al.h): alGetBufferi записывает результат в *value,
+// поэтому указатель обязан быть *mut, а не *const.
+// Компилятор C принимает оба варианта неявно, но в Rust *const и *mut
+// — разные типы; передача изменяемого указателя там, где ожидается *const,
+// либо не компилируется, либо требует небезопасного каста.
+// Все аналогичные "Get"-функции (alGetListenerf, alGetSourcei и т.д.)
+// уже объявлены с *mut — это была единственная расхожденность.
+// ============================================================
+
 // Allow the crate to have a non-snake-case name (touchHLE).
 // This also allows items in the crate to have non-snake-case names.
 #![allow(non_snake_case)]
@@ -152,7 +168,9 @@ extern "C" {
 
     pub fn alEnable(capability: ALenum);
 
-    pub fn alGetBufferi(buffer: ALuint, param: ALenum, value: *const ALint);
+    // FIX: value должен быть *mut ALint, так как alGetBufferi ЗАПИСЫВАЕТ
+    // результат по этому указателю. Исходный код ошибочно объявлял *const ALint.
+    pub fn alGetBufferi(buffer: ALuint, param: ALenum, value: *mut ALint);
 
     pub fn alListenerf(param: ALenum, value: ALfloat);
     pub fn alListener3f(param: ALenum, value1: ALfloat, value2: ALfloat, value3: ALfloat);
@@ -236,3 +254,4 @@ extern "C" {
     pub fn alDopplerVelocity(dopplerVelocity: ALfloat);
     pub fn alSpeedOfSound(speed: ALfloat);
 }
+

@@ -35,7 +35,7 @@ use crate::objc::{
 use crate::Environment;
 use std::collections::{HashMap, HashSet};
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub(super) struct CALayerHostObject {
     delegate: id,
     pub(super) sublayers: Vec<id>,
@@ -280,38 +280,6 @@ pub const CONSTANTS: ConstantExports = &[
     (
         "_kCAFillRuleEvenOdd",
         HostConstant::NSString(kCAFillRuleEvenOdd),
-    ),
-    (
-        "_kCATransitionFade",
-        HostConstant::NSString(kCATransitionFade),
-    ),
-    (
-        "_kCATransitionMoveIn",
-        HostConstant::NSString(kCATransitionMoveIn),
-    ),
-    (
-        "_kCATransitionPush",
-        HostConstant::NSString(kCATransitionPush),
-    ),
-    (
-        "_kCATransitionReveal",
-        HostConstant::NSString(kCATransitionReveal),
-    ),
-    (
-        "_kCATransitionFromRight",
-        HostConstant::NSString(kCATransitionFromRight),
-    ),
-    (
-        "_kCATransitionFromLeft",
-        HostConstant::NSString(kCATransitionFromLeft),
-    ),
-    (
-        "_kCATransitionFromTop",
-        HostConstant::NSString(kCATransitionFromTop),
-    ),
-    (
-        "_kCATransitionFromBottom",
-        HostConstant::NSString(kCATransitionFromBottom),
     ),
     ("_kCAOnOrderIn", HostConstant::NSString(kCAOnOrderIn)),
     ("_kCAOnOrderOut", HostConstant::NSString(kCAOnOrderOut)),

@@ -12,6 +12,15 @@
 //! Asynchronous connections immediately call `connection:didFailWithError:`
 //! on the delegate (if it implements that method) so the app can handle
 //! the failure gracefully instead of hanging or crashing.
+//!
+//! For block-based API (`sendAsynchronousRequest:queue:completionHandler:`),
+//! we deliver an NSError to the completion handler so the app can handle
+//! the offline state gracefully (e.g. Sonic Runners shows "Error" and retries).
+//!
+//! NOTE: Returning fake 200 OK with empty JSON `{}` causes crashes in games
+//! like Sonic Runners which try to parse specific server-protocol fields from
+//! the response body. Returning an error is always safe — all tested games
+//! handle NSURLErrorNotConnectedToInternet gracefully.
 
 use crate::mem::{MutPtr, MutVoidPtr};
 use crate::objc::{
@@ -27,6 +36,7 @@ const NS_URL_ERROR_NOT_CONNECTED_TO_INTERNET: i32 = -1009;
 // Host object — stores the delegate so we can call it back.
 // ---------------------------------------------------------------------------
 
+#[derive(Default)]
 struct NSURLConnectionHostObject {
     /// `id<NSURLConnectionDelegate>` — retained while the connection is
     /// alive, released on dealloc / cancel.
@@ -108,7 +118,7 @@ pub const CLASSES: ClassExports = objc_classes! {
            returningResponse:(MutPtr<id>)response_ptr
                        error:(MutPtr<id>)error_ptr {
 
-    log!("NSURLConnection sendSynchronousRequest: stub called");
+    log!("NSURLConnection sendSynchronousRequest: stub called (returning empty data + error)");
 
     // Even when request is nil we return non-nil NSData, because many
     // callers do not nil-check the return value and crash otherwise.
@@ -142,21 +152,11 @@ pub const CLASSES: ClassExports = objc_classes! {
 // MARK: - Asynchronous block API
 //
 // `+[NSURLConnection sendAsynchronousRequest:queue:completionHandler:]`
-// — iOS 5+ block-based convenience that performs the request on a
-// concurrent worker thread and then enqueues the completion handler on
-// the supplied `NSOperationQueue`. Apple's documentation
-// <https://developer.apple.com/documentation/foundation/nsurlconnection/1414553-sendasynchronousrequest>
-// requires the handler to be called exactly once with:
-//   - `response`: an `NSURLResponse` (nil on failure),
-//   - `data`:     an `NSData`        (nil on failure),
-//   - `connectionError`: nil on success, otherwise an `NSError`.
-//
-// touchHLE has no live network stack, so we synthesise the
-// "not connected to internet" error returned by Apple's reachability
-// stack and forward through the same NSOperationQueue API the app
-// supplied — falling back to a same-thread synchronous invocation
-// when the queue is nil, exactly like Apple's framework when the app
-// passes a nil queue.
+// — iOS 5+ block-based convenience. touchHLE has no live network stack,
+// so we synthesise the "not connected to internet" error. The handler is
+// called with (nil, nil, error) as Apple documents for failure cases.
+// Games like Sonic Runners handle this gracefully — they show an error
+// dialog and allow the user to retry.
 
 + (())sendAsynchronousRequest:(id)request
                         queue:(id)queue
@@ -169,9 +169,8 @@ pub const CLASSES: ClassExports = objc_classes! {
          delivering NSURLErrorNotConnectedToInternet (touchHLE has no network)"
     );
 
-    // Build the failure NSError that Apple returns when the device has
-    // no reachable network.
-    let _ = request; // unused: every request hits the same offline path
+    // Build the failure NSError.
+    let _ = request;
     let error = make_network_error(env);
 
     // The completion handler is a `void (^)(NSURLResponse *, NSData *,
@@ -184,11 +183,8 @@ pub const CLASSES: ClassExports = objc_classes! {
     use crate::abi::CallFromHost;
     let invoke = crate::abi::GuestFunction::from_addr_with_thumb_bit(invoke_ptr);
 
-    // Apple's API copies the block onto the supplied operation queue.
-    // We don't have a full NSBlockOperation pipeline, so we call the
-    // block directly on the current thread. This matches Apple's
-    // behaviour when the caller passes a nil queue.
     let _ = queue;
+    // Call with (nil_response, nil_data, error) — failure.
     let _: () = invoke.call_from_host(env, (handler, nil, nil, error));
 }
 
@@ -220,7 +216,7 @@ pub const CLASSES: ClassExports = objc_classes! {
         return nil;
     }
 
-    log!(
+    log_dbg!(
         "NSURLConnection initWithRequest:... delegate:... \
          startImmediately:{} (stub — failure via delegate)",
         start_immediately,
@@ -234,34 +230,50 @@ pub const CLASSES: ClassExports = objc_classes! {
     }
 
     if start_immediately {
-        // Do NOT call the delegate failure callback synchronously.
-        // Calling it immediately during initWithRequest: triggers the game's
-        // error-handling code before the render loop is set up, which can
-        // leave the app in a broken state (white screen). Instead, silently
-        // drop the request — the app will eventually time out or proceed
-        // without the network data.
-        log!(
-            "NSURLConnection: request will silently fail \
+        // Per Apple's documentation, when startImmediately is YES the
+        // connection begins loading data immediately. Since touchHLE has
+        // no network stack, we schedule the delegate failure callback via
+        // performSelector:withObject:afterDelay: so that it fires on the
+        // next run-loop iteration rather than synchronously during init.
+        // This matches real iOS timing behavior — delegates are never
+        // called during the initializer itself.
+        log_dbg!(
+            "NSURLConnection: scheduling deferred failure notification \
              (networking not supported in touchHLE)"
         );
+        let sel = env.objc.register_host_selector("_touchHLE_deliverFailure".to_string(), &mut env.mem);
+        () = msg![env; this performSelector:sel withObject:nil afterDelay:0.0_f64];
     }
 
     this
 }
 
+// Internal helper method: delivers the failure callback to the delegate.
+- (())_touchHLE_deliverFailure {
+    let host = env.objc.borrow::<NSURLConnectionHostObject>(this);
+    if host.cancelled {
+        return;
+    }
+    let delegate = host.delegate;
+    if delegate == nil {
+        return;
+    }
+    notify_delegate_failure(env, this, delegate);
+}
+
 // MARK: - Instance methods
 
 - (())start {
-    log!(
-        "NSURLConnection start: silently dropping \
+    log_dbg!(
+        "NSURLConnection start: scheduling deferred failure \
          (networking not supported in touchHLE)"
     );
+    let sel = env.objc.register_host_selector("_touchHLE_deliverFailure".to_string(), &mut env.mem);
+    () = msg![env; this performSelector:sel withObject:nil afterDelay:0.0_f64];
 }
 
 - (())cancel {
     log_dbg!("NSURLConnection cancel");
-    // Mark cancelled; do NOT call the delegate (Apple behaviour: cancelled
-    // connections do not deliver connection:didFailWithError:).
     env.objc
         .borrow_mut::<NSURLConnectionHostObject>(this)
         .cancelled = true;

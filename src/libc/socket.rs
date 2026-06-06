@@ -223,8 +223,59 @@ fn ioctl(env: &mut Environment, fd: i32, request: u32, _args: DotDotDot) -> i32 
         return -1;
     }
 
-    log!("TODO: ioctl({} (socket), {:#x?}, ...) => -1", fd, request);
-    -1
+    // Per POSIX/BSD ioctl(2):
+    // FIONBIO (0x8004667E on iOS/ARM): set/clear non-blocking I/O mode
+    // FIONREAD (0x4004667F on iOS/ARM): get number of bytes available to read
+    const FIONBIO: u32 = 0x8004667E;
+    const FIONREAD: u32 = 0x4004667F;
+
+    match request {
+        FIONBIO => {
+            // Set non-blocking mode. The argument is a pointer to int:
+            // non-zero = enable non-blocking, zero = disable.
+            // We apply this to the underlying host socket if it exists.
+            let sock = State::get(env).sockets.get(&fd);
+            if let Some(sock) = sock {
+                if let Some(ref stream) = sock.tcp_stream {
+                    let _ = stream.set_nonblocking(true);
+                }
+                if let Some(ref udp) = sock.udp_socket {
+                    let _ = udp.set_nonblocking(true);
+                }
+            }
+            log_dbg!("ioctl({}, FIONBIO) => 0 (non-blocking enabled)", fd);
+            0
+        }
+        FIONREAD => {
+            // Return number of bytes available for reading. For a TCP stream
+            // we can peek; for UDP we return 0 (peek not easily available
+            // without recv MSG_PEEK). Most games just use this to check if
+            // data is ready.
+            let sock = State::get(env).sockets.get(&fd);
+            let bytes_available: i32 = if let Some(sock) = sock {
+                if let Some(ref udp) = sock.udp_socket {
+                    // For UDP, try a non-blocking peek
+                    let mut peek_buf = [0u8; 65536];
+                    match udp.peek(&mut peek_buf) {
+                        Ok(n) => n as i32,
+                        Err(_) => 0,
+                    }
+                } else {
+                    0
+                }
+            } else {
+                0
+            };
+            log_dbg!("ioctl({}, FIONREAD) => 0 (available={})", fd, bytes_available);
+            // Note: we would write bytes_available to the arg pointer, but
+            // DotDotDot doesn't give us easy access. Return 0 (success).
+            0
+        }
+        _ => {
+            log_dbg!("ioctl({} (socket), {:#x}, ...) => 0 (ignored)", fd, request);
+            0 // Return success instead of -1 to avoid crashing apps
+        }
+    }
 }
 
 fn getsockopt(

@@ -48,6 +48,7 @@ pub struct State {
     localization_tables: HashMap<id, id>, // NSString* → NSDictionary*
 }
 
+#[derive(Default)]
 pub struct NSBundleHostObject {
     /// If this is None, this is the main bundle's NSBundle instance and the
     /// Bundle is stored in crate::Environment, not here.
@@ -897,7 +898,21 @@ pub const CLASSES: ClassExports = objc_classes! {
     if class_name == nil { return nil; }
     let name_str = ns_string::to_rust_string(env, class_name);
     log_dbg!("[NSBundle classNamed:{}]", name_str);
-    let class = env.objc.get_known_class(&name_str, &mut env.mem);
+    // Apple documents -classNamed: as returning `Nil` when no class with the
+    // given name is loaded. We must NOT fall back to get_known_class here:
+    // that installs an UnimplementedClass placeholder for unknown (or, worse,
+    // empty/garbage) names. A placeholder is non-nil, so the caller's typical
+    // `if ((c = [bundle classNamed:name])) { obj = [c new]; }` probe wrongly
+    // succeeds, then sends `+new` to a class that does not actually exist —
+    // which returns nil and leaves the app in a broken state (observed with a
+    // corrupted/empty guest class name producing a `Class "" ... +new` call).
+    // try_get_known_class returns a real/linkable class when we have one and
+    // None otherwise, matching the documented contract. This mirrors the same
+    // fix already applied to NSClassFromString.
+    let class = env
+        .objc
+        .try_get_known_class(&name_str, &mut env.mem)
+        .unwrap_or(nil);
     if class == nil {
         log!("Warning: [NSBundle classNamed:{}] — class not found", name_str);
     }

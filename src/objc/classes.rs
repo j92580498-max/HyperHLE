@@ -35,6 +35,7 @@ pub type Class = id;
 /// will look up method implementations.
 ///
 /// Note: `superclass` can be `nil`!
+#[derive(Default)]
 pub(super) struct ClassHostObject {
     pub(super) name: String,
     pub(super) is_metaclass: bool,
@@ -504,6 +505,57 @@ impl ObjC {
         None
     }
 
+    /// Find a registered class that *declares* the given instance method
+    /// (by selector name), or `None` if there is no such class.
+    ///
+    /// This scans every registered class but only matches a class that
+    /// declares the method *itself* — the superclass chain is intentionally
+    /// not walked, so unrelated classes that merely inherit the method cannot
+    /// match. Classes without a real Objective-C method table (substituted
+    /// SDK classes, unimplemented-class placeholders, etc.) are skipped.
+    ///
+    /// This is used by `UIApplicationMain` to recover the application delegate
+    /// when the app neither wires it up through its main nib nor passes a
+    /// resolvable delegate class name (some binaries reach `UIApplicationMain`
+    /// with a nil/empty delegate class name, which otherwise leaves the app
+    /// with no delegate and frozen on its launch image, because
+    /// `application:didFinishLaunchingWithOptions:` is never delivered).
+    ///
+    /// When several classes match, selection is deterministic and prefers
+    /// names that look like an application delegate (e.g. `AppDelegate`,
+    /// `AppController`), so an unrelated class that happens to implement the
+    /// selector does not shadow the real delegate.
+    pub fn class_declaring_instance_method(&self, sel_name: &str) -> Option<Class> {
+        let sel = self.lookup_selector(sel_name)?;
+        // (preference rank, class name, class); lower rank wins, ties broken by
+        // name so the result does not depend on `HashMap` iteration order.
+        let mut candidates: Vec<(u8, &str, Class)> = Vec::new();
+        for (name, &class) in self.classes.iter() {
+            let Some(host_object) = self.get_host_object(class) else {
+                continue;
+            };
+            let Some(class_host_object) =
+                host_object.as_any().downcast_ref::<ClassHostObject>()
+            else {
+                continue;
+            };
+            if class_host_object.is_metaclass || !class_host_object.methods.contains_key(&sel) {
+                continue;
+            }
+            let lower = name.to_ascii_lowercase();
+            let rank = if lower.ends_with("appdelegate") || lower.ends_with("appcontroller") {
+                0
+            } else if lower.contains("delegate") {
+                1
+            } else {
+                2
+            };
+            candidates.push((rank, name.as_str(), class));
+        }
+        candidates.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(b.1)));
+        candidates.first().map(|&(_, _, class)| class)
+    }
+
     fn link_class_inner(
         &mut self,
         name: &str,
@@ -518,6 +570,29 @@ impl ObjC {
         if let Some(class) = self.get_class(name, is_metaclass, mem) {
             return class;
         };
+
+        // An empty or otherwise garbage class name never corresponds to a real
+        // class. The real Objective-C runtime returns nil for such lookups
+        // (e.g. `objc_getClass("") == nil`). These names show up in touchHLE
+        // when a guest reads a class name (or a `Class` pointer) from
+        // uninitialised/corrupt memory — e.g. a NULL-page read returning all
+        // zeroes decodes to the empty string. Registering a placeholder class
+        // under such a name is actively harmful: it (a) pollutes the class
+        // table so every subsequent lookup of that name returns a non-nil
+        // placeholder, breaking the documented "class not loaded -> nil"
+        // contract apps rely on for feature detection, and (b) leads the guest
+        // to send messages (e.g. `+new`) to a bogus class, which here was
+        // observed to spin in a tight loop printing
+        // `Class "" ... is unimplemented. Call to class method "new".`
+        // forever. Refuse to create/register such classes and return nil so
+        // the guest sees the same "no such class" result a real device would.
+        if name.is_empty() || name.chars().any(|c| c.is_control() || !c.is_ascii()) {
+            log_dbg!(
+                "Refusing to link class with empty/garbage name {:?}; returning nil.",
+                name
+            );
+            return nil;
+        }
 
         let class_host_object: Box<dyn AnyHostObject>;
         let metaclass_host_object: Box<dyn AnyHostObject>;
@@ -582,14 +657,9 @@ impl ObjC {
                 || name.starts_with("SBScene")
                 || name.starts_with("SBSystem"); // <-- ДОБАВЛЕНО ЗДЕСЬ
 
-            // Detect garbage class names that come from corrupted guest
-            // memory reads (e.g. a NULL-page read returning all zeroes
-            // becomes the empty string after CStr decoding). Treat them
-            // like any other "unknown class": install a placeholder so the
-            // guest can keep running, instead of crashing the emulator.
-            let is_garbage =
-                name.is_empty() || name.chars().any(|c| c.is_control() || !c.is_ascii());
-
+            // Note: empty/garbage class names are rejected earlier in this
+            // function (they return nil), so by this point `name` is a
+            // plausible, if unknown, class name.
             if !use_placeholder && !is_fake {
                 // Historically this branch panicked. In the real
                 // Objective-C runtime, looking up a class that doesn't
@@ -603,21 +673,12 @@ impl ObjC {
                 // perfectly valid apps, so instead we log a loud warning
                 // and install an UnimplementedClass placeholder, matching
                 // the behaviour of the `link_class` (dyld) path.
-                if is_garbage {
-                    log!(
-                        "Warning: get_known_class called with a garbage/empty class name \
-                         ({:?}) — this usually indicates corrupted guest memory. \
-                         Installing a placeholder so the guest can keep running.",
-                        name
-                    );
-                } else {
-                    log!(
-                        "Warning: get_known_class({:?}) — no host implementation; \
-                         installing a placeholder. Some features depending on this \
-                         class may not work.",
-                        name
-                    );
-                }
+                log!(
+                    "Warning: get_known_class({:?}) — no host implementation; \
+                     installing a placeholder. Some features depending on this \
+                     class may not work.",
+                    name
+                );
             }
 
             if is_fake {
@@ -1676,6 +1737,43 @@ pub fn ___objc_personality_v0(
     // _URC_FATAL_PHASE1_ERROR
     3
 }
+
+/// `_objc_msgForward` — the ObjC runtime's message forwarding trampoline.
+///
+/// On a real device, when `objc_msgSend` cannot find an IMP for a given
+/// selector, it dispatches through `_objc_msgForward` which triggers the
+/// full forwarding chain (`forwardingTargetForSelector:`,
+/// `methodSignatureForSelector:`, `forwardInvocation:`). touchHLE does not
+/// implement this machinery; instead we provide a stub that returns nil (0).
+///
+/// This is exported so that binaries containing external relocations to
+/// `__objc_msgForward` (e.g. Cut the Rope HD) can link without errors.
+/// When the stub is actually called, the return value of nil/0 matches the
+/// behaviour of sending a message to nil — the least-surprising fallback
+/// for games that probe forwarding.
+pub fn objc_msgForward(_env: &mut crate::Environment, _receiver: id, _sel: SEL) -> id {
+    log_dbg!(
+        "_objc_msgForward called (receiver={:?}, sel={:?}) — returning nil",
+        _receiver,
+        _sel
+    );
+    nil
+}
+
+/// `_objc_msgForward_stret` — struct-return variant of `_objc_msgForward`.
+/// Same stub behaviour: returns without writing to the stret buffer.
+pub fn objc_msgForward_stret(
+    _env: &mut crate::Environment,
+    _stret: MutVoidPtr,
+    _receiver: id,
+    _sel: SEL,
+) {
+    log_dbg!(
+        "_objc_msgForward_stret called (receiver={:?}, sel={:?}) — no-op",
+        _receiver,
+        _sel
+    );
+}
 /// `void objc_storeStrong(id *location, id obj)` — ARC's strong-store
 /// runtime helper. The clang ARC specification
 /// (<https://clang.llvm.org/docs/AutomaticReferenceCounting.html#runtime-support>)
@@ -2211,6 +2309,19 @@ pub fn class_getProperty(
         return ConstVoidPtr::null();
     };
     let name_string = name_str.to_string();
+
+    let class_name_string = env.objc.get_class_name(cls).to_owned();
+    if class_name_string == "UIScreen" && name_string == "scale" {
+        // Even if [UIScreen scale] is implemented, we're not yet having a
+        // proper support for `objc_property_t`, so we prefer to return NULL
+        // here (e.g. property is not declared).
+        // Some games (such as Mirror's Edge) check for those to conditionally
+        // apply some parameters depending on the iOS version without actually
+        // using the property.
+        // TODO: support `objc_property_t` properly
+        log!("TODO: class_getProperty(UIScreen, scale) -> NULL");
+        return ConstVoidPtr::null();
+    }
 
     // Walk the class hierarchy looking for the property.
     let mut current = cls;

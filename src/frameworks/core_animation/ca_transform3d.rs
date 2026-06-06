@@ -23,7 +23,7 @@ use crate::matrix::Matrix;
 use crate::mem::SafeRead;
 use crate::Environment;
 
-#[derive(Copy, Clone, Debug, PartialEq)]
+#[derive(Copy, Clone, Debug, Default, PartialEq)]
 #[repr(C, packed)]
 pub struct CATransform3D {
     pub m11: CGFloat,

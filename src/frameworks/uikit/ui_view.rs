@@ -986,9 +986,9 @@ pub const CLASSES: ClassExports = objc_classes! {
     env.objc.borrow_mut::<UIViewHostObject>(this).gesture_recognizers.push(recognizer);
     // Apple docs: -addGestureRecognizer: sets the recognizer's `view` to
     // the receiver. The recognizer holds this back-pointer weakly.
-    env.objc
-        .borrow_mut::<crate::frameworks::uikit::ui_gesture_recognizer::UIGestureRecognizerHostObject>(recognizer)
-        .view = this;
+    // Use msg_send to set the view property so it goes through the ObjC
+    // dispatch and handles subclass host objects correctly.
+    let _: () = crate::objc::msg![env; recognizer setView:this];
 }
 
 - (())removeGestureRecognizer:(id)recognizer {
@@ -997,9 +997,7 @@ pub const CLASSES: ClassExports = objc_classes! {
     if let Some(pos) = host.gesture_recognizers.iter().position(|&r| r == recognizer) {
         host.gesture_recognizers.remove(pos);
         // Apple docs: recognizer's view back-pointer is cleared on detach.
-        env.objc
-            .borrow_mut::<crate::frameworks::uikit::ui_gesture_recognizer::UIGestureRecognizerHostObject>(recognizer)
-            .view = nil;
+        let _: () = crate::objc::msg![env; recognizer setView:nil];
         release(env, recognizer);
     }
 }
@@ -1367,8 +1365,6 @@ pub const CLASSES: ClassExports = objc_classes! {
     let layer = env.objc.borrow::<UIViewHostObject>(this).layer;
     () = msg![env; layer setNeedsDisplayInRect:invalid_rect]
 }
-
-- (())setNeedsLayout { }
 
 - (CGRect)bounds {
     let layer = env.objc.borrow::<UIViewHostObject>(this).layer;

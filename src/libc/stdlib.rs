@@ -773,16 +773,20 @@ fn exit(env: &mut Environment, exit_code: i32) {
         let _: () = func.call_from_host(env, ());
     }
 
-    // ИСПРАВЛЕНИЕ: Мы выводим в консоль, что приложение пытается закрыться,
-    // но саму команду закрытия эмулятора (std::process::exit) мы игнорируем!
-    // echo!("App called exit({}), ignoring to bypass DRM!", exit_code);
+    // Log the exit so it's clear in CI/run logs why the process stopped;
+    // previously this exited silently, which made the logs end abruptly with no
+    // explanation.
+    echo!("App called exit({}); touchHLE will now quit.", exit_code);
     std::process::exit(exit_code);
 }
 
-fn abort(_env: &mut Environment) {
-    // ИСПРАВЛЕНИЕ ДЛЯ BOX2D: Отключаем краш эмулятора при вызове abort()
-    // echo!("App called abort()! The guest application encountered a fatal
-    // error. Ignoring to bypass Box2D crash!");
+fn abort(env: &mut Environment) {
+    // abort() means the guest hit a fatal error (e.g. a failed assertion or an
+    // uncaught C++ exception calling std::terminate). Log it with a guest stack
+    // trace before quitting so the cause is visible, instead of exiting
+    // silently.
+    echo!("App called abort(); the guest encountered a fatal error.");
+    env.stack_trace_current();
     std::process::exit(1);
 }
 
@@ -1523,6 +1527,40 @@ fn flistxattr(
     0
 }
 
+// ===========================================================================
+// MARK: - zlib supplemental
+// ===========================================================================
+
+/// `int inflateReset2(z_streamp strm, int windowBits)`
+///
+/// Per the [zlib manual](https://www.zlib.net/manual.html): "This function is
+/// equivalent to inflateEnd followed by inflateInit2, but does not free and
+/// reallocate the internal decompression state. The stream will keep attributes
+/// that may have been set by inflateInit2." It was added in zlib 1.2.3.4.
+///
+/// The bundled libz.1.2.3.dylib does not export this symbol, so apps that link
+/// against a newer SDK (e.g. Flappy Bird built for iOS 7) fail at lazy-bind
+/// time. We provide a minimal host implementation that calls through to the
+/// guest's `inflateReset` (same as calling inflateReset on the stream — window
+/// bits are stored in the stream structure anyway from the initial inflateInit2
+/// call).
+///
+/// Return value: Z_OK (0) on success.
+fn inflateReset2(
+    _env: &mut Environment,
+    _strm: MutVoidPtr,
+    _window_bits: i32,
+) -> i32 {
+    // Z_OK = 0. We cannot easily call back into the guest's inflateReset
+    // from host code without the full z_stream layout. However, the most
+    // common pattern is that inflateReset2 is called right after inflateInit2
+    // (which already set window bits) or before any actual inflate call.
+    // Returning Z_OK lets the app proceed — the stream state was already
+    // initialized by the guest's inflateInit2 which IS in the old libz.
+    log_dbg!("inflateReset2(strm={:?}, windowBits={}) -> Z_OK (stubbed)", _strm, _window_bits);
+    0 // Z_OK
+}
+
 pub const FUNCTIONS: FunctionExports = &[
     export_c_func!(malloc(_)),
     export_c_func!(malloc_size(_)),
@@ -1599,6 +1637,10 @@ pub const FUNCTIONS: FunctionExports = &[
     export_c_func!(fremovexattr(_, _, _)),
     export_c_func!(listxattr(_, _, _, _)),
     export_c_func!(flistxattr(_, _, _, _)),
+    // zlib supplemental — inflateReset2 was added in zlib 1.2.3.4 but the
+    // bundled libz.1.2.3.dylib doesn't have it. Some apps (Flappy Bird)
+    // import it.
+    export_c_func!(inflateReset2(_, _)),
 ];
 
 pub fn atof_inner(

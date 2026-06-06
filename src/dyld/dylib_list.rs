@@ -57,7 +57,7 @@ pub const MAP_KIT: super::HostDylib = super::HostDylib {
     function_exports: &[frameworks::map_kit::FUNCTIONS],
 };
 
-// MessageUI (stub — no real compose-sheet implementation yet)
+// MessageUI (stub — MFMailComposeViewController lives in MediaPlayer exports)
 pub const MESSAGE_UI: super::HostDylib = super::HostDylib {
     path: "/System/Library/Frameworks/MessageUI.framework/MessageUI",
     aliases: &[],

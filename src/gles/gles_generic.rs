@@ -1440,6 +1440,31 @@ pub trait GLES {
         log_once!("GenVertexArrays (OpenGL ES 3.0) not supported by this backend [stubbed]");
     }
 
+    // -- Vertex array objects via GL_OES_vertex_array_object (ES 1.1 / 2.0) --
+    //
+    // Returns whether this backend can back the `*VertexArrayOES` entry points
+    // with real host vertex array objects. When false, the guest-facing
+    // wrappers fall back to a no-op emulation. Failing to honour VAO state is a
+    // common cause of lost buffer bindings (see the My Talking Tom crash where
+    // a tapped-Tom draw used a vertex attribute whose backing buffer binding
+    // had been dropped), so backends that can should override this.
+    fn supports_vao_oes(&self) -> bool {
+        false
+    }
+    unsafe fn BindVertexArrayOES(&mut self, _array: GLuint) {
+        log_once!("BindVertexArrayOES not supported by this backend [stubbed]");
+    }
+    unsafe fn GenVertexArraysOES(&mut self, _n: GLsizei, _arrays: *mut GLuint) {
+        log_once!("GenVertexArraysOES not supported by this backend [stubbed]");
+    }
+    unsafe fn DeleteVertexArraysOES(&mut self, _n: GLsizei, _arrays: *const GLuint) {
+        log_once!("DeleteVertexArraysOES not supported by this backend [stubbed]");
+    }
+    unsafe fn IsVertexArrayOES(&mut self, _array: GLuint) -> GLboolean {
+        log_once!("IsVertexArrayOES not supported by this backend [stubbed]");
+        0
+    }
+
     // -- Buffer object operations (3.0) --
     unsafe fn MapBufferRange(
         &mut self,

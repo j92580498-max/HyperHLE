@@ -765,12 +765,6 @@ pub const CLASSES: ClassExports = objc_classes! {
 
 // MARK: - Key-Value Observing (KVO)
 
-- (())willChangeValueForKey:(id)_key {
-}
-
-- (())didChangeValueForKey:(id)_key {
-}
-
 - (NSUInteger)version {
     0
 }

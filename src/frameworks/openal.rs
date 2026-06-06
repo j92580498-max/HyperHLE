@@ -617,7 +617,7 @@ fn alIsBuffer(env: &mut Environment, buffer: ALuint) -> ALboolean {
 }
 
 fn alGetBufferi(env: &mut Environment, buffer: ALuint, param: ALenum, value: MutPtr<ALint>) {
-    let value = env.mem.ptr_at(value, 1);
+    let value = env.mem.ptr_at_mut(value, 1);
     try_get_context!(env, context);
     unsafe { context.GetBufferi(buffer, param, value) }
 }

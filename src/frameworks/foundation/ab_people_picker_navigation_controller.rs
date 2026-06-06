@@ -22,6 +22,7 @@ pub const AB_PERSON_COMPOSITE_NAME_FORMAT_LAST_NAME_FIRST: ABPersonCompositeName
 
 // MARK: - Host object
 
+#[derive(Default)]
 struct ABPeoplePickerNavigationControllerHostObject {
     /// Weak delegate reference (per Apple convention for picker delegates).
     people_picker_delegate: id,

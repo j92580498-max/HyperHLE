@@ -15,7 +15,7 @@ use crate::objc::{
 // =========================================================================
 
 /// 16 raw bytes of a UUID (big-endian, RFC 4122 layout).
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
 pub struct UuidBytes(pub [u8; 16]);
 
 impl UuidBytes {
@@ -89,6 +89,7 @@ impl UuidBytes {
 // MARK: - Host object
 // =========================================================================
 
+#[derive(Default)]
 pub struct NSUUIDHostObject {
     pub bytes: UuidBytes,
 }
